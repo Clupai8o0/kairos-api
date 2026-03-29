@@ -49,7 +49,7 @@ class Task(Base):
     depends_on: Mapped[list] = mapped_column(ARRAY(String), default=list)
 
     # Metadata
-    metadata: Mapped[dict] = mapped_column(JSONB, default=dict)
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
 
     # Timestamps
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -12,15 +12,15 @@
 
 **Last updated:** 2026-03-29
 
-**Build phase:** Scaffold complete — ready for Task CRUD implementation
+**Build phase:** Scaffold complete + DB schema migrated — ready for Task CRUD implementation
 
 **What exists:**
 - [x] Project scaffold (pyproject.toml, directory structure)
 - [x] Docker Compose (PostgreSQL + API)
 - [x] Core config + database setup
-- [x] SQLAlchemy models (all 7 models defined, no migration yet)
+- [x] SQLAlchemy models (all core models defined)
 - [x] Pydantic schemas (Create/Update/Response for all entities)
-- [ ] Alembic initial migration (models exist, migration not yet generated — needs running DB)
+- [x] Alembic initial migration (generated + applied to local PostgreSQL)
 - [ ] Auth (Google OAuth + API key)
 - [ ] Task CRUD (route stubs exist, service logic not wired)
 - [ ] Project CRUD (route stubs exist, service logic not wired)
@@ -35,7 +35,6 @@
 
 **Known issues:**
 - `uv` not installed on this machine — used `python3.12 -m venv` + `pip` instead. README documents `uv` as the recommended approach.
-- Alembic initial migration not yet generated (needs a running PostgreSQL instance via `docker compose up -d db`)
 
 **Blocked on:** Google Cloud project setup (need CLIENT_ID + CLIENT_SECRET) for auth and GCal integration
 
@@ -75,6 +74,30 @@ TEMPLATE — Copy this block for each session:
 - Issue description
 
 -->
+
+### Session 2026-03-29 — Alembic initial migration
+
+**What was done:**
+- Started PostgreSQL via Docker (`docker compose up -d db`)
+- Ran Alembic autogeneration and created initial revision: `a13aec9b7c6d_initial_schema.py`
+- Applied migration successfully (`alembic upgrade head`)
+- Verified current revision is at head (`a13aec9b7c6d`)
+- Ran tests to confirm no regressions (`2 passed`)
+
+**What changed:**
+- Updated ORM field names in `Task` and `Project` from `metadata` to `metadata_json` while keeping DB column name `metadata`
+- Reason: SQLAlchemy declarative reserves `metadata`, which blocked model import and Alembic autogeneration
+
+**Decisions made:**
+- Keep database column names as `metadata` for API/data-model consistency, but avoid reserved SQLAlchemy attribute names at ORM class level
+
+**What's next:**
+- Implement Task CRUD service + route wiring against the migrated schema
+- Add a `/health` endpoint that checks DB connectivity
+- Begin auth groundwork (Google OAuth dependency wiring)
+
+**Issues/blockers discovered:**
+- No new blockers for backend progress
 
 ### Session 2026-03-29 — Project scaffold
 

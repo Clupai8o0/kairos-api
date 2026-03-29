@@ -27,7 +27,7 @@ class Project(Base):
     deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default=ProjectStatus.ACTIVE)
     color: Mapped[str | None] = mapped_column(String(7), nullable=True)
-    metadata: Mapped[dict] = mapped_column(JSONB, default=dict)
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

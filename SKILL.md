@@ -41,6 +41,7 @@ Then read the relevant reference file for the current task:
 | API endpoints / routes        | `references/api-contract.md`                         |
 | Project structure / setup     | `references/project-structure.md`                    |
 | Google Calendar integration   | `references/gcal-integration.md`                     |
+| Writing or updating tests     | `references/testing.md`                              |
 
 ### File Maintenance Rules
 
@@ -184,7 +185,8 @@ Specifically:
 
 - [ ] Write code that follows the module boundaries above
 - [ ] Include type hints on every function
-- [ ] Write or update tests for any new endpoint
+- [ ] Write or update tests for any new endpoint or service function — read `references/testing.md`
+  for the exact test cases required for the module being built
 - [ ] If a design decision is made mid-session, note it immediately in the Active Decisions
   section of `CHANGELOG.md` — don't wait until session end
 
