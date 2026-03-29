@@ -1,8 +1,9 @@
 """Auth routes — Google OAuth flow + API key management."""
 
+import hmac
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
 from fastapi.responses import RedirectResponse
 from google_auth_oauthlib.flow import Flow
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,9 @@ from kairos.services.auth_service import (
 )
 
 _COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
+_OAUTH_COOKIE_MAX_AGE = 60 * 10  # 10 minutes
+_OAUTH_STATE_COOKIE = "oauth_state"
+_OAUTH_VERIFIER_COOKIE = "oauth_code_verifier"
 
 router = APIRouter()
 
@@ -30,7 +34,7 @@ SCOPES = [
 ]
 
 
-def _build_flow() -> Flow:
+def _build_flow(state: str | None = None) -> Flow:
     """Build a Google OAuth flow from env config."""
     client_config = {
         "web": {
@@ -41,7 +45,12 @@ def _build_flow() -> Flow:
             "redirect_uris": [settings.GOOGLE_REDIRECT_URI],
         }
     }
-    flow = Flow.from_client_config(client_config, scopes=SCOPES)
+    flow = Flow.from_client_config(
+        client_config,
+        scopes=SCOPES,
+        state=state,
+        autogenerate_code_verifier=True,
+    )
     flow.redirect_uri = settings.GOOGLE_REDIRECT_URI
     return flow
 
@@ -55,18 +64,47 @@ async def google_login() -> RedirectResponse:
     This endpoint does **not** require authentication.
     """
     flow = _build_flow()
-    auth_url, _ = flow.authorization_url(
+    auth_url, state = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
+        code_challenge_method="S256",
     )
-    return RedirectResponse(url=auth_url, status_code=status.HTTP_302_FOUND)
+    if not flow.code_verifier:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate PKCE verifier for OAuth flow",
+        )
+
+    redirect = RedirectResponse(url=auth_url, status_code=status.HTTP_302_FOUND)
+    redirect.set_cookie(
+        key=_OAUTH_STATE_COOKIE,
+        value=state,
+        httponly=True,
+        max_age=_OAUTH_COOKIE_MAX_AGE,
+        samesite="lax",
+        secure=settings.KAIROS_ENV == "production",
+        path="/",
+    )
+    redirect.set_cookie(
+        key=_OAUTH_VERIFIER_COOKIE,
+        value=flow.code_verifier,
+        httponly=True,
+        max_age=_OAUTH_COOKIE_MAX_AGE,
+        samesite="lax",
+        secure=settings.KAIROS_ENV == "production",
+        path="/",
+    )
+    return redirect
 
 
 @router.get("/google/callback", response_model=TokenResponse)
 async def google_callback(
     code: str,
+    state: str,
     response: Response,
+    oauth_state: str | None = Cookie(default=None, alias=_OAUTH_STATE_COOKIE),
+    oauth_code_verifier: str | None = Cookie(default=None, alias=_OAUTH_VERIFIER_COOKIE),
     db: AsyncSession = Depends(get_db),
 ) -> TokenResponse:
     """Handle the Google OAuth callback.
@@ -77,7 +115,23 @@ async def google_callback(
     API clients may also use the returned token as `Authorization: Bearer <token>`.
     This endpoint does **not** require prior authentication.
     """
-    flow = _build_flow()
+    if oauth_state is None or oauth_code_verifier is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Missing OAuth PKCE context. Start auth from /auth/google/login "
+                "in the same browser session."
+            ),
+        )
+
+    if not hmac.compare_digest(oauth_state, state):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid OAuth state. Please retry login.",
+        )
+
+    flow = _build_flow(state=state)
+    flow.code_verifier = oauth_code_verifier
 
     try:
         flow.fetch_token(code=code)
@@ -122,6 +176,8 @@ async def google_callback(
     )
 
     jwt_token = create_access_token(user.id)
+    response.delete_cookie(key=_OAUTH_STATE_COOKIE, httponly=True, samesite="lax", path="/")
+    response.delete_cookie(key=_OAUTH_VERIFIER_COOKIE, httponly=True, samesite="lax", path="/")
     response.set_cookie(
         key="access_token",
         value=jwt_token,

@@ -25,6 +25,9 @@ async def test_google_oauth_redirect(unauthed_client: AsyncClient) -> None:
         response = await unauthed_client.get("/auth/google/login", follow_redirects=False)
         assert response.status_code == 302
         assert "accounts.google.com" in response.headers["location"]
+        set_cookie = response.headers.get("set-cookie", "")
+        assert "oauth_state=" in set_cookie
+        assert "oauth_code_verifier=" in set_cookie
 
 
 @pytest.mark.asyncio
@@ -49,7 +52,12 @@ async def test_google_callback_creates_user(unauthed_client: AsyncClient, db_ses
         patch("kairos.api.auth._build_flow", return_value=mock_flow),
         patch("google.oauth2.id_token.verify_oauth2_token", return_value=id_info),
     ):
-        response = await unauthed_client.get("/auth/google/callback?code=test_code")
+        unauthed_client.cookies.set("oauth_state", "state123")
+        unauthed_client.cookies.set("oauth_code_verifier", "verifier123")
+        response = await unauthed_client.get(
+            "/auth/google/callback?code=test_code&state=state123"
+        )
+        unauthed_client.cookies.clear()
 
     assert response.status_code == 200
     data = response.json()
@@ -82,7 +90,12 @@ async def test_google_callback_existing_user(
         patch("kairos.api.auth._build_flow", return_value=mock_flow),
         patch("google.oauth2.id_token.verify_oauth2_token", return_value=id_info),
     ):
-        response = await unauthed_client.get("/auth/google/callback?code=test_code")
+        unauthed_client.cookies.set("oauth_state", "state123")
+        unauthed_client.cookies.set("oauth_code_verifier", "verifier123")
+        response = await unauthed_client.get(
+            "/auth/google/callback?code=test_code&state=state123"
+        )
+        unauthed_client.cookies.clear()
 
     assert response.status_code == 200
     data = response.json()
@@ -141,6 +154,33 @@ async def test_missing_auth_returns_401(unauthed_client: AsyncClient) -> None:
     """Request with no auth header returns 401."""
     response = await unauthed_client.get("/auth/me")
     assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_google_callback_missing_pkce_context_returns_400(
+    unauthed_client: AsyncClient,
+) -> None:
+    """Callback without state/verifier context returns 400 with actionable error."""
+    response = await unauthed_client.get(
+        "/auth/google/callback?code=test_code&state=state123"
+    )
+    assert response.status_code == 400
+    assert "Missing OAuth PKCE context" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_google_callback_state_mismatch_returns_400(
+    unauthed_client: AsyncClient,
+) -> None:
+    """Callback with mismatched state returns 400."""
+    unauthed_client.cookies.set("oauth_state", "state_abc")
+    unauthed_client.cookies.set("oauth_code_verifier", "verifier123")
+    response = await unauthed_client.get(
+        "/auth/google/callback?code=test_code&state=state_xyz"
+    )
+    unauthed_client.cookies.clear()
+    assert response.status_code == 400
+    assert "Invalid OAuth state" in response.json()["detail"]
 
 
 @pytest.mark.asyncio

@@ -10,7 +10,7 @@
 
 ## Current State
 
-**Last updated:** 2026-03-29
+**Last updated:** 2026-03-30
 
 **Build phase:** Frontend-ready — v1 feature-complete + frontend integration
 
@@ -75,6 +75,30 @@ TEMPLATE — Copy this block for each session:
 - Issue description
 
 -->
+
+### Session 2026-03-30 — OAuth PKCE state/verifier fix
+
+**What was done:**
+- Updated `GET /auth/google/login` in `kairos/api/auth.py` to use PKCE explicitly by generating/storing OAuth `state` and `code_verifier` in short-lived httpOnly cookies (`oauth_state`, `oauth_code_verifier`), and requesting auth URL with `code_challenge_method=S256`.
+- Updated `GET /auth/google/callback` in `kairos/api/auth.py` to require `state`, validate cookie-backed PKCE context, verify state match, and set `flow.code_verifier` before token exchange.
+- Added explicit 400 errors for missing PKCE context and invalid OAuth state to make local-dev failures diagnosable.
+- Cleans up temporary PKCE cookies after successful callback.
+- Updated auth tests in `tests/test_auth.py` to include callback `state` and PKCE cookies, and added new failure-path tests:
+  - `test_google_callback_missing_pkce_context_returns_400`
+  - `test_google_callback_state_mismatch_returns_400`
+
+**What changed:**
+- OAuth callback contract now requires the `state` query parameter and valid PKCE context from the same browser session started via `/auth/google/login`.
+
+**Decisions made:**
+- Use short-lived, httpOnly cookie storage for PKCE context in v1 (no Redis dependency yet), aligned with current cookie-based browser auth flow.
+
+**What's next:**
+- Run a live end-to-end OAuth test against Google Cloud credentials to confirm local frontend signup/login path.
+- If cross-origin cookie issues appear, add explicit dev-domain guidance (`localhost` vs `127.0.0.1`) to README troubleshooting.
+
+**Issues/blockers discovered:**
+- None
 
 ### Session 2026-03-29 — Frontend integration: cookie auth + schedule response shape
 
