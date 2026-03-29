@@ -39,7 +39,7 @@ class Tag(Base):
         secondary="task_tags", back_populates="tags"
     )
     projects: Mapped[list["Project"]] = relationship(  # noqa: F821
-        secondary="project_tags", back_populates="projects"
+        secondary="project_tags", back_populates="tags"
     )
 
     __table_args__ = (UniqueConstraint("user_id", "name"),)

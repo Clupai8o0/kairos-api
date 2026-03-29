@@ -1,15 +1,128 @@
-from fastapi import APIRouter
+"""Auth routes — Google OAuth flow + API key management."""
+
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import RedirectResponse
+from google_auth_oauthlib.flow import Flow
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from kairos.core.auth import get_current_user
+from kairos.core.config import settings
+from kairos.core.deps import get_db
+from kairos.models.user import User
+from kairos.schemas.auth import ApiKeyResponse, TokenResponse, UserResponse
+from kairos.services.auth_service import (
+    create_access_token,
+    generate_api_key,
+    get_or_create_user,
+)
 
 router = APIRouter()
 
+SCOPES = [
+    "openid",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+    "https://www.googleapis.com/auth/calendar",
+]
+
+
+def _build_flow() -> Flow:
+    """Build a Google OAuth flow from env config."""
+    client_config = {
+        "web": {
+            "client_id": settings.GOOGLE_CLIENT_ID,
+            "client_secret": settings.GOOGLE_CLIENT_SECRET,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [settings.GOOGLE_REDIRECT_URI],
+        }
+    }
+    flow = Flow.from_client_config(client_config, scopes=SCOPES)
+    flow.redirect_uri = settings.GOOGLE_REDIRECT_URI
+    return flow
+
 
 @router.get("/google/login")
-async def google_login() -> dict:
+async def google_login() -> RedirectResponse:
     """Redirect to Google OAuth consent screen."""
-    return {"detail": "Not implemented"}
+    flow = _build_flow()
+    auth_url, _ = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="true",
+        prompt="consent",
+    )
+    return RedirectResponse(url=auth_url, status_code=status.HTTP_302_FOUND)
 
 
-@router.get("/google/callback")
-async def google_callback() -> dict:
-    """Handle Google OAuth callback."""
-    return {"detail": "Not implemented"}
+@router.get("/google/callback", response_model=TokenResponse)
+async def google_callback(
+    code: str,
+    db: AsyncSession = Depends(get_db),
+) -> TokenResponse:
+    """Exchange Google auth code for tokens, create/update user, return JWT."""
+    flow = _build_flow()
+
+    try:
+        flow.fetch_token(code=code)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to exchange authorization code: {exc}",
+        ) from exc
+
+    credentials = flow.credentials
+
+    # Get user info from Google
+    from google.oauth2 import id_token
+    from google.auth.transport.requests import Request
+
+    try:
+        id_info = id_token.verify_oauth2_token(
+            credentials.id_token,
+            Request(),
+            settings.GOOGLE_CLIENT_ID,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to verify Google token: {exc}",
+        ) from exc
+
+    token_expiry = (
+        datetime.fromtimestamp(credentials.expiry.timestamp(), tz=timezone.utc)
+        if credentials.expiry
+        else None
+    )
+
+    user = await get_or_create_user(
+        db,
+        email=id_info["email"],
+        name=id_info.get("name"),
+        google_id=id_info["sub"],
+        access_token=credentials.token,
+        refresh_token=credentials.refresh_token,
+        token_expiry=token_expiry,
+    )
+
+    jwt_token = create_access_token(user.id)
+    return TokenResponse(access_token=jwt_token)
+
+
+@router.post("/api-key", response_model=ApiKeyResponse)
+async def create_api_key(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ApiKeyResponse:
+    """Generate a new API key for the authenticated user (replaces any existing key)."""
+    key = await generate_api_key(db, current_user)
+    return ApiKeyResponse(api_key=key)
+
+
+@router.get("/me", response_model=UserResponse)
+async def get_me(
+    current_user: User = Depends(get_current_user),
+) -> UserResponse:
+    """Return the currently authenticated user."""
+    return UserResponse.model_validate(current_user)

@@ -14,11 +14,13 @@ class User(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=cuid)
     email: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     name: Mapped[str | None] = mapped_column(String, nullable=True)
+    google_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
     google_access_token: Mapped[str | None] = mapped_column(Text, nullable=True)
     google_refresh_token: Mapped[str | None] = mapped_column(Text, nullable=True)
     google_token_expiry: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    api_key: Mapped[str | None] = mapped_column(String, unique=True, nullable=True, index=True)
     preferences: Mapped[dict] = mapped_column(JSONB, default=dict)
 
     created_at: Mapped[datetime] = mapped_column(

@@ -21,7 +21,7 @@
 - [x] SQLAlchemy models (all core models defined)
 - [x] Pydantic schemas (Create/Update/Response for all entities)
 - [x] Alembic initial migration (generated + applied to local PostgreSQL)
-- [ ] Auth (Google OAuth + API key)
+- [x] Auth (Google OAuth + API key + JWT)
 - [ ] Task CRUD (route stubs exist, service logic not wired)
 - [ ] Project CRUD (route stubs exist, service logic not wired)
 - [ ] Tag system (route stubs exist, service logic not wired)
@@ -30,13 +30,13 @@
 - [ ] Scheduling engine
 - [ ] Schedule-on-write (auto-schedule on task create/update)
 - [ ] Blackout days (route stubs exist, service logic not wired)
-- [x] Tests passing (36 baseline tests across routers, schema/migration guards, and OpenAPI route checks)
+- [x] Tests passing (42 tests — 34 baseline + 8 auth tests)
 - [ ] OpenAPI docs reviewed
 
 **Known issues:**
 - `uv` not installed on this machine — used `python3.12 -m venv` + `pip` instead. README documents `uv` as the recommended approach.
 
-**Blocked on:** Google Cloud project setup (need CLIENT_ID + CLIENT_SECRET) for auth and GCal integration
+**Blocked on:** Google Cloud project setup (need CLIENT_ID + CLIENT_SECRET) to test live OAuth flow and GCal integration
 
 ---
 
@@ -74,6 +74,43 @@ TEMPLATE — Copy this block for each session:
 - Issue description
 
 -->
+
+### Session 2026-03-29 — Auth integration (Google OAuth + JWT + API key)
+
+**What was done:**
+- Added `google_id` and `api_key` columns to User model
+- Implemented `kairos/services/auth_service.py` — JWT creation/validation, Google OAuth user upsert, API key generation (`kai_` prefix)
+- Implemented `kairos/core/auth.py` — `get_current_user` dependency supporting both Bearer JWT and X-API-Key header auth
+- Implemented full auth routes in `kairos/api/auth.py`:
+  - `GET /auth/google/login` — redirects to Google OAuth consent screen (302)
+  - `GET /auth/google/callback?code=...` — exchanges code, creates/updates user, returns JWT
+  - `POST /auth/api-key` — generates API key for authenticated user
+  - `GET /auth/me` — returns current user info
+- Updated Pydantic schemas: `TokenResponse`, `ApiKeyResponse`, `UserResponse`
+- Updated `conftest.py` with DB-backed test fixtures (`db_engine`, `db_session`, `test_user`, `auth_client`, `unauthed_client`) using in-memory SQLite + JSONB/ARRAY type remapping
+- Wrote 8 auth tests covering all `testing.md` spec requirements
+- Generated and applied Alembic migration `856f2c078717`
+- Fixed Tag model bug: `back_populates="projects"` → `back_populates="tags"` on `Tag.projects` relationship
+
+**What changed:**
+- `kairos/api/auth.py` — replaced stubs with working Google OAuth flow + API key endpoint
+- `kairos/core/auth.py` — replaced empty stub with `get_current_user` dependency
+- `tests/conftest.py` — added DB-backed fixtures alongside original simple client
+- `kairos/models/tag.py` — fixed `back_populates` bug (was referencing wrong attribute name)
+
+**Decisions made:**
+- JWT tokens expire after 7 days (single-user app, long-lived is fine for v1)
+- API keys use `kai_` prefix + 32-byte URL-safe random token
+- Auth supports dual mode: Bearer JWT (for browser/frontend) and X-API-Key header (for OpenClaw/agents)
+- Tests use in-memory SQLite with JSONB→JSON and ARRAY→JSON type remapping for speed
+
+**What's next:**
+- Wire `get_current_user` dependency into all CRUD routes (tasks, projects, tags, views, schedule, blackout-days)
+- Implement Task CRUD service logic
+- Set up Google Cloud project for live OAuth testing
+
+**Issues/blockers discovered:**
+- Tag model had `back_populates="projects"` instead of `back_populates="tags"` — only surfaced when SQLAlchemy configured mappers during DB-backed tests
 
 ### Session 2026-03-29 — Baseline test suite expansion
 
