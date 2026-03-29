@@ -29,7 +29,7 @@ async def test_google_oauth_redirect(unauthed_client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_google_callback_creates_user(unauthed_client: AsyncClient, db_session) -> None:
-    """Callback with valid code creates user + returns JWT."""
+    """Callback with valid code creates user + returns JWT in body and sets httpOnly cookie."""
     mock_credentials = MagicMock()
     mock_credentials.token = "google_access_token_123"
     mock_credentials.refresh_token = "google_refresh_token_123"
@@ -55,6 +55,7 @@ async def test_google_callback_creates_user(unauthed_client: AsyncClient, db_ses
     data = response.json()
     assert "access_token" in data
     assert data["token_type"] == "bearer"
+    assert "access_token" in response.cookies
 
 
 @pytest.mark.asyncio
@@ -156,3 +157,26 @@ async def test_valid_jwt_authenticates(
     data = response.json()
     assert data["email"] == test_user.email
     assert data["id"] == test_user.id
+
+
+@pytest.mark.asyncio
+async def test_cookie_authenticates(
+    unauthed_client: AsyncClient, db_session, test_user
+) -> None:
+    """Request with valid JWT in httpOnly cookie passes auth."""
+    token = create_access_token(test_user.id)
+    unauthed_client.cookies.set("access_token", token)
+    response = await unauthed_client.get("/auth/me")
+    unauthed_client.cookies.clear()
+    assert response.status_code == 200
+    assert response.json()["id"] == test_user.id
+
+
+@pytest.mark.asyncio
+async def test_logout_clears_cookie(unauthed_client: AsyncClient) -> None:
+    """POST /auth/logout returns 204 and clears the access_token cookie."""
+    response = await unauthed_client.post("/auth/logout")
+    assert response.status_code == 204
+    # Set-Cookie header with max-age=0 or empty value indicates cookie deletion
+    set_cookie = response.headers.get("set-cookie", "")
+    assert "access_token" in set_cookie

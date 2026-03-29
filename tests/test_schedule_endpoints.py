@@ -145,7 +145,9 @@ async def test_schedule_today_requires_auth(unauthed_client: AsyncClient) -> Non
 async def test_schedule_today_empty_when_no_tasks(auth_client: AsyncClient) -> None:
     response = await auth_client.get("/schedule/today")
     assert response.status_code == 200
-    assert response.json() == []
+    data = response.json()
+    assert "date" in data
+    assert data["items"] == []
 
 
 @pytest.mark.asyncio
@@ -178,9 +180,11 @@ async def test_schedule_today_returns_todays_tasks(
     response = await auth_client.get("/schedule/today")
     assert response.status_code == 200
     data = response.json()
-    assert len(data) == 1
-    assert data[0]["title"] == "Today's task"
-    assert data[0]["gcal_event_id"] == "fake_gcal_id"
+    assert len(data["items"]) == 1
+    item = data["items"][0]
+    assert item["type"] == "task"
+    assert item["task"]["title"] == "Today's task"
+    assert item["task"]["gcal_event_id"] == "fake_gcal_id"
 
 
 # ── GET /schedule/week ────────────────────────────────────────────────────────
@@ -195,7 +199,7 @@ async def test_schedule_week_requires_auth(unauthed_client: AsyncClient) -> None
 async def test_schedule_week_empty_when_no_tasks(auth_client: AsyncClient) -> None:
     response = await auth_client.get("/schedule/week")
     assert response.status_code == 200
-    assert response.json() == []
+    assert response.json() == []  # No days with tasks → empty list
 
 
 # ── GET /schedule/free-slots ─────────────────────────────────────────────────

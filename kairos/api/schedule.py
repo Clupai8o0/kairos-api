@@ -1,12 +1,14 @@
 """Schedule API — trigger scheduling runs, query slots and today's agenda."""
 
 import logging
+from collections import defaultdict
 from datetime import datetime, time, timedelta, timezone
 
 from fastapi import Depends, HTTPException, status
 from fastapi.routing import APIRouter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from kairos.core.auth import get_current_user
 from kairos.core.deps import get_db, get_gcal_service
@@ -15,9 +17,12 @@ from kairos.models.user import User
 from kairos.schemas.schedule import (
     FreeSlotResponse,
     ScheduledTaskResponse,
+    ScheduleItem,
     ScheduleRunRequest,
     ScheduleRunResponse,
+    ScheduleTodayResponse,
 )
+from kairos.schemas.task import TaskResponse
 from kairos.services.gcal_service import GCalAuthError, GCalService
 from kairos.services.scheduler import (
     TimeSlot,
@@ -54,68 +59,77 @@ async def run_schedule(
     )
 
 
-@router.get("/today", response_model=list[ScheduledTaskResponse])
+@router.get("/today", response_model=ScheduleTodayResponse)
 async def schedule_today(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
-) -> list[ScheduledTaskResponse]:
-    """Return all tasks scheduled for today, ordered by start time."""
+) -> ScheduleTodayResponse:
+    """Return all tasks scheduled for today as a `ScheduleTodayResponse`.
+
+    Each item has `type: "task"` and a full `task` object (including tags).
+    GCal-only events (non-task blocks) are not included in v1.
+    Items are ordered by scheduled start time.
+    """
     now = datetime.now(timezone.utc)
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     end = start + timedelta(days=1)
 
     rows = await db.execute(
-        select(Task).where(
+        select(Task)
+        .where(
             Task.user_id == user.id,
             Task.scheduled_at >= start,
             Task.scheduled_at < end,
             Task.status != TaskStatus.CANCELLED,
-        ).order_by(Task.scheduled_at)
+        )
+        .options(selectinload(Task.tags))
+        .order_by(Task.scheduled_at)
     )
     tasks = rows.scalars().all()
-    return [
-        ScheduledTaskResponse(
-            task_id=t.id,
-            title=t.title,
-            start=t.scheduled_at,
-            end=t.scheduled_end,
-            gcal_event_id=t.gcal_event_id,
-        )
+    items = [
+        ScheduleItem(type="task", task=TaskResponse.model_validate(t))
         for t in tasks
         if t.scheduled_at and t.scheduled_end
     ]
+    return ScheduleTodayResponse(date=now.date().isoformat(), items=items)
 
 
-@router.get("/week", response_model=list[ScheduledTaskResponse])
+@router.get("/week", response_model=list[ScheduleTodayResponse])
 async def schedule_week(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
-) -> list[ScheduledTaskResponse]:
-    """Return all tasks scheduled for the current week (Mon–Sun), ordered by start time."""
+) -> list[ScheduleTodayResponse]:
+    """Return the current week's schedule (Mon–Sun) grouped by day.
+
+    Returns one `ScheduleTodayResponse` per day that has at least one scheduled task.
+    Days with no tasks are omitted. Items within each day are ordered by start time.
+    """
     now = datetime.now(timezone.utc)
     monday = now - timedelta(days=now.weekday())
     start = monday.replace(hour=0, minute=0, second=0, microsecond=0)
     end = start + timedelta(days=7)
 
     rows = await db.execute(
-        select(Task).where(
+        select(Task)
+        .where(
             Task.user_id == user.id,
             Task.scheduled_at >= start,
             Task.scheduled_at < end,
             Task.status != TaskStatus.CANCELLED,
-        ).order_by(Task.scheduled_at)
-    )
-    tasks = rows.scalars().all()
-    return [
-        ScheduledTaskResponse(
-            task_id=t.id,
-            title=t.title,
-            start=t.scheduled_at,
-            end=t.scheduled_end,
-            gcal_event_id=t.gcal_event_id,
         )
-        for t in tasks
-        if t.scheduled_at and t.scheduled_end
+        .options(selectinload(Task.tags))
+        .order_by(Task.scheduled_at)
+    )
+    tasks = [t for t in rows.scalars().all() if t.scheduled_at and t.scheduled_end]
+
+    by_date: dict[str, list[ScheduleItem]] = defaultdict(list)
+    for t in tasks:
+        day = t.scheduled_at.date().isoformat()  # type: ignore[union-attr]
+        by_date[day].append(ScheduleItem(type="task", task=TaskResponse.model_validate(t)))
+
+    return [
+        ScheduleTodayResponse(date=day, items=items)
+        for day, items in sorted(by_date.items())
     ]
 
 

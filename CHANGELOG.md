@@ -12,7 +12,7 @@
 
 **Last updated:** 2026-03-29
 
-**Build phase:** OpenAPI docs complete — v1 feature-complete
+**Build phase:** Frontend-ready — v1 feature-complete + frontend integration
 
 **What exists:**
 - [x] Project scaffold (pyproject.toml, directory structure)
@@ -75,6 +75,47 @@ TEMPLATE — Copy this block for each session:
 - Issue description
 
 -->
+
+### Session 2026-03-29 — Frontend integration: cookie auth + schedule response shape
+
+**What was done:**
+- `kairos/api/auth.py`: OAuth callback now sets `access_token` as an httpOnly cookie
+  (`secure=True` in production, `samesite=lax`). JWT is still returned in the body for
+  non-browser clients. Added `POST /auth/logout` that deletes the cookie (204, no auth required).
+- `kairos/core/auth.py`: `get_current_user` now reads JWT from httpOnly cookie
+  (`Cookie: access_token`) as a third auth path — after Bearer header, before API key.
+  Priority: Bearer > cookie > X-API-Key.
+- `kairos/schemas/schedule.py`: Added `ScheduleItem`, `GCalEventItem`, `ScheduleTodayResponse`
+  matching the frontend TypeScript types exactly.
+- `kairos/api/schedule.py`: `GET /schedule/today` now returns `ScheduleTodayResponse`
+  (`{ date, items: [{ type, task }] }`). `GET /schedule/week` now returns
+  `list[ScheduleTodayResponse]`, one entry per day with tasks, ordered by date.
+  Both endpoints eagerly load tags via `selectinload`.
+- Tests updated: 4 new auth tests (cookie auth, logout), schedule tests updated for new shape.
+  177 tests total, all passing.
+
+**What changed:**
+- `GET /schedule/today` response shape: was `list[ScheduledTaskResponse]`, now
+  `ScheduleTodayResponse`. Breaking change for any client using the old shape.
+- `GET /schedule/week` response shape: was `list[ScheduledTaskResponse]`, now
+  `list[ScheduleTodayResponse]`. Breaking change.
+
+**Decisions made:**
+- Cookie is `samesite=lax` (not `strict`) so it's sent on top-level navigations
+  (e.g. Google redirecting back to our app after OAuth).
+- `/schedule/week` omits days with no tasks rather than returning empty-items days —
+  cleaner for the frontend to render.
+- `ScheduledTaskResponse` is kept in schemas (used internally/tests) but no longer
+  returned by any endpoint.
+
+**What's next:**
+- Add `GET /preferences` and `PATCH /preferences` endpoints (User.preferences JSONB)
+- Google Cloud project setup to test live OAuth + GCal end-to-end
+- Consider adding `GET /views/{id}/execute` as an alias for `GET /views/{id}/tasks`
+  (frontend docs reference both names)
+
+**Issues/blockers discovered:**
+- None
 
 ### Session 2026-03-29 — OpenAPI docs review
 

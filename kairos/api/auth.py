@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import RedirectResponse
 from google_auth_oauthlib.flow import Flow
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +17,8 @@ from kairos.services.auth_service import (
     generate_api_key,
     get_or_create_user,
 )
+
+_COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
 
 router = APIRouter()
 
@@ -64,13 +66,16 @@ async def google_login() -> RedirectResponse:
 @router.get("/google/callback", response_model=TokenResponse)
 async def google_callback(
     code: str,
+    response: Response,
     db: AsyncSession = Depends(get_db),
 ) -> TokenResponse:
     """Handle the Google OAuth callback.
 
     Exchanges the authorization `code` for tokens, creates or updates the user record,
-    and returns a signed JWT. Pass the JWT as `Authorization: Bearer <token>` on all
-    subsequent requests. This endpoint does **not** require prior authentication.
+    sets a signed JWT as an httpOnly cookie, and returns the token in the body.
+    The cookie is the primary auth mechanism for browser clients (`credentials: "include"`).
+    API clients may also use the returned token as `Authorization: Bearer <token>`.
+    This endpoint does **not** require prior authentication.
     """
     flow = _build_flow()
 
@@ -117,7 +122,27 @@ async def google_callback(
     )
 
     jwt_token = create_access_token(user.id)
+    response.set_cookie(
+        key="access_token",
+        value=jwt_token,
+        httponly=True,
+        max_age=_COOKIE_MAX_AGE,
+        samesite="lax",
+        secure=settings.KAIROS_ENV == "production",
+        path="/",
+    )
     return TokenResponse(access_token=jwt_token)
+
+
+@router.post("/logout", status_code=204)
+async def logout(response: Response) -> None:
+    """Clear the auth cookie.
+
+    Deletes the `access_token` httpOnly cookie. The client is responsible for
+    discarding any in-memory copy of the token. This endpoint does **not** require
+    prior authentication — calling it when already logged out is a no-op.
+    """
+    response.delete_cookie(key="access_token", httponly=True, samesite="lax", path="/")
 
 
 @router.post("/api-key", response_model=ApiKeyResponse)
