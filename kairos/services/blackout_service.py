@@ -1,0 +1,1 @@
+"""Blackout day business logic."""
