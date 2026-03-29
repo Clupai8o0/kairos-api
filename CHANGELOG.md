@@ -30,7 +30,7 @@
 - [ ] Scheduling engine
 - [ ] Schedule-on-write (auto-schedule on task create/update)
 - [ ] Blackout days (route stubs exist, service logic not wired)
-- [x] Tests passing (2 stub tests — OpenAPI docs load + tasks endpoint returns [])
+- [x] Tests passing (36 baseline tests across routers, schema/migration guards, and OpenAPI route checks)
 - [ ] OpenAPI docs reviewed
 
 **Known issues:**
@@ -74,6 +74,29 @@ TEMPLATE — Copy this block for each session:
 - Issue description
 
 -->
+
+### Session 2026-03-29 — Baseline test suite expansion
+
+**What was done:**
+- Added module-level baseline tests for all currently implemented API surfaces:
+	- auth, tasks, projects, tags, views, schedule endpoints, blackout-days
+- Added OpenAPI route registration test to catch missing router wiring
+- Added model guard tests for reserved-name workaround (`metadata_json` attr mapping to DB column `metadata`)
+- Added migration guard tests to confirm revision files exist and include core table creation
+- Ran full test suite and verified all tests pass (`36 passed`)
+
+**What changed:**
+- Expanded test coverage from 2 smoke tests to 36 baseline tests aligned with current scaffold behavior
+
+**Decisions made:**
+- For the scaffold phase, use behavior-accurate baseline tests (stub responses + route availability) now, then evolve to full feature tests as services are implemented
+
+**What's next:**
+- Implement Task CRUD service logic and upgrade `tests/test_tasks.py` from stub assertions to real CRUD + validation/error-path coverage
+- Add DB-backed `/health` endpoint and corresponding integration test
+
+**Issues/blockers discovered:**
+- Full spec-level tests in `references/testing.md` remain dependent on unimplemented services (Task CRUD, auth, scheduler, GCal)
 
 ### Session 2026-03-29 — Alembic initial migration
 
