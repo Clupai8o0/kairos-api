@@ -12,7 +12,7 @@
 
 **Last updated:** 2026-03-29
 
-**Build phase:** Project CRUD complete — ready for Tag CRUD implementation
+**Build phase:** Tag CRUD complete — ready for View CRUD implementation
 
 **What exists:**
 - [x] Project scaffold (pyproject.toml, directory structure)
@@ -24,13 +24,13 @@
 - [x] Auth (Google OAuth + API key + JWT)
 - [x] Task CRUD (fully wired — service + routes + 29 tests)
 - [x] Project CRUD (fully wired — service + routes + 21 tests)
-- [ ] Tag system (route stubs exist, service logic not wired)
+- [x] Tag system (fully wired — service + routes + 17 tests)
 - [ ] View system (route stubs exist, service logic not wired)
 - [ ] GCal integration (read free/busy, write events)
 - [ ] Scheduling engine
 - [ ] Schedule-on-write (auto-schedule on task create/update)
 - [ ] Blackout days (route stubs exist, service logic not wired)
-- [x] Tests passing (82 tests — 66 previous + 21 project CRUD tests - 5 replaced stubs)
+- [x] Tests passing (95 tests)
 - [ ] OpenAPI docs reviewed
 
 **Known issues:**
@@ -74,6 +74,40 @@ TEMPLATE — Copy this block for each session:
 - Issue description
 
 -->
+
+### Session 2026-03-29 — Tag CRUD implementation
+
+**What was done:**
+- Implemented `kairos/services/tag_service.py` — full CRUD: `create_tag`, `list_tags`
+  (with correlated subquery counts), `update_tag`, `delete_tag`
+- Rewrote `kairos/api/tags.py` — all 4 routes wired with auth + DB deps, proper
+  response models. `DELETE` is a hard delete (returns 204); `GET /` returns
+  `TagListResponse` with `task_count` and `project_count` per tag.
+- Updated `kairos/schemas/tag.py` — added `Field(min_length=1, max_length=100)` on
+  `name`, `TagWithCountsResponse`, `TagListResponse`
+- Replaced 4 stub tests in `tests/test_tags.py` with 17 real CRUD + auth + error tests
+
+**What changed:**
+- `kairos/schemas/tag.py` — `TagCreate.name` now has `min_length=1, max_length=100`;
+  added `TagWithCountsResponse` and `TagListResponse`
+- `kairos/api/tags.py` — fully replaced stubs; `DELETE` returns 204 (hard delete);
+  `GET /` returns `TagListResponse`; 409 on duplicate name for create and update
+- `kairos/services/tag_service.py` — implemented from empty stub
+
+**Decisions made:**
+- `GET /tags` uses correlated scalar subqueries for task/project counts — avoids
+  loading all related objects into memory
+- `DELETE /tags/:id` is a hard delete (per API contract); ON DELETE CASCADE on junction
+  tables handles association cleanup automatically
+- 409 returned (not 422) for duplicate tag name — it's a conflict, not a validation error
+
+**What's next:**
+- Implement View CRUD (`kairos/services/view_service.py` + `kairos/api/views.py`)
+  and upgrade `tests/test_views.py` from stubs to real tests
+- After views: Blackout days
+
+**Issues/blockers discovered:**
+- None
 
 ### Session 2026-03-29 — Project CRUD implementation
 
