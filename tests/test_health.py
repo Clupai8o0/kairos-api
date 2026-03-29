@@ -24,7 +24,6 @@ async def test_openapi_schema_contains_core_routes(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_tasks_endpoint_stub(client: AsyncClient) -> None:
+async def test_tasks_endpoint_requires_auth(client: AsyncClient) -> None:
     response = await client.get("/api/v1/tasks/")
-    assert response.status_code == 200
-    assert response.json() == []
+    assert response.status_code == 401

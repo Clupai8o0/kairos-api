@@ -12,7 +12,7 @@
 
 **Last updated:** 2026-03-29
 
-**Build phase:** Scaffold complete + DB schema migrated — ready for Task CRUD implementation
+**Build phase:** Task CRUD complete — ready for Project CRUD implementation
 
 **What exists:**
 - [x] Project scaffold (pyproject.toml, directory structure)
@@ -22,7 +22,7 @@
 - [x] Pydantic schemas (Create/Update/Response for all entities)
 - [x] Alembic initial migration (generated + applied to local PostgreSQL)
 - [x] Auth (Google OAuth + API key + JWT)
-- [ ] Task CRUD (route stubs exist, service logic not wired)
+- [x] Task CRUD (fully wired — service + routes + 29 tests)
 - [ ] Project CRUD (route stubs exist, service logic not wired)
 - [ ] Tag system (route stubs exist, service logic not wired)
 - [ ] View system (route stubs exist, service logic not wired)
@@ -30,7 +30,7 @@
 - [ ] Scheduling engine
 - [ ] Schedule-on-write (auto-schedule on task create/update)
 - [ ] Blackout days (route stubs exist, service logic not wired)
-- [x] Tests passing (42 tests — 34 baseline + 8 auth tests)
+- [x] Tests passing (66 tests — previous 36 + 29 task CRUD tests + 1 updated health test)
 - [ ] OpenAPI docs reviewed
 
 **Known issues:**
@@ -74,6 +74,42 @@ TEMPLATE — Copy this block for each session:
 - Issue description
 
 -->
+
+### Session 2026-03-29 — Task CRUD implementation
+
+**What was done:**
+- Implemented `kairos/services/task_service.py` — full CRUD: `create_task`, `list_tasks`,
+  `get_task`, `update_task`, `delete_task`, `complete_task`, `unschedule_task`
+- Rewrote `kairos/api/tasks.py` — all 7 routes wired with auth + DB deps, proper
+  response models and 404 handling. `DELETE` is a soft delete (status → cancelled, returns 200).
+  Added `POST /:id/complete` and `POST /:id/unschedule` routes.
+- Updated `kairos/schemas/task.py` — added `buffer_mins` to `TaskCreate`,
+  `field_validator` for priority (1–4) and duration_mins (positive), `TagResponse` embedded
+  in `TaskResponse`, `metadata` field aliased to `metadata_json` ORM attribute to avoid
+  collision with SQLAlchemy's `Base.metadata`, added `TaskListResponse` with pagination fields
+- Replaced stub tests in `tests/test_tasks.py` with 29 real CRUD + filter + tag + dependency tests
+- Updated `tests/test_health.py` — `test_tasks_endpoint_stub` updated to correctly assert 401
+  (tasks now require auth)
+
+**What changed:**
+- `kairos/api/tasks.py` — fully replaced stubs; `DELETE` now returns 200 + cancelled task
+  (was 204 no body)
+- `kairos/schemas/task.py` — `TaskResponse.metadata` now uses `validation_alias='metadata_json'`;
+  validators added; `TaskListResponse` added
+
+**Decisions made:**
+- `DELETE /tasks/:id` returns 200 with the soft-deleted task (status=cancelled) — more useful
+  to callers than a silent 204, and aligns with the testing spec
+- `update_task` service fetches the task with `selectinload(Task.tags)` before mutation to
+  avoid SQLAlchemy lazy-load MissingGreenlet in async context
+
+**What's next:**
+- Implement Project CRUD (`kairos/services/project_service.py` + `kairos/api/projects.py`)
+  and upgrade `tests/test_projects.py` from stubs to real tests
+- After projects: Tag CRUD, then View CRUD
+
+**Issues/blockers discovered:**
+- None
 
 ### Session 2026-03-29 — Baseline test suite expansion
 
