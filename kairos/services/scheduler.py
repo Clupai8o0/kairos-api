@@ -41,6 +41,19 @@ class ScheduleResult:
     details: list[dict] = field(default_factory=list)
 
 
+# ── Timezone helpers ──────────────────────────────────────────────────────────
+
+def _to_utc(dt: datetime) -> datetime:
+    """Ensure a datetime is UTC-aware. TZ-naive datetimes are assumed to be UTC.
+
+    SQLite strips timezone info when storing/retrieving datetimes; this prevents
+    'can\'t subtract offset-naive and offset-aware datetimes' errors at runtime.
+    """
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 # ── Urgency scoring ────────────────────────────────────────────────────────────
 
 def calculate_urgency(task: Task, now: datetime) -> float:
@@ -51,7 +64,7 @@ def calculate_urgency(task: Task, now: datetime) -> float:
     score += priority_weights.get(task.priority, 30)
 
     if task.deadline:
-        hours_until_deadline = (task.deadline - now).total_seconds() / 3600
+        hours_until_deadline = (_to_utc(task.deadline) - now).total_seconds() / 3600
         if hours_until_deadline <= 0:
             score += 200
         elif hours_until_deadline <= 24:
@@ -70,9 +83,10 @@ def calculate_urgency(task: Task, now: datetime) -> float:
 
 
 def _sort_key(task: Task, now: datetime):
+    deadline = _to_utc(task.deadline) if task.deadline else datetime.max.replace(tzinfo=timezone.utc)
     return (
         -calculate_urgency(task, now),
-        task.deadline or datetime.max.replace(tzinfo=timezone.utc),
+        deadline,
         task.created_at,
         task.title,
     )
@@ -125,7 +139,7 @@ def find_best_slot(
 
     for slot in free_slots:  # already sorted by start time
         if task.deadline:
-            latest_start = task.deadline - timedelta(minutes=task.duration_mins)
+            latest_start = _to_utc(task.deadline) - timedelta(minutes=task.duration_mins)
             if slot.start > latest_start:
                 return None  # All remaining slots are after deadline
 
@@ -467,3 +481,26 @@ def _recompute_free_slots(
             all_free.extend(s for s in clipped if s.duration_mins >= 5)
         current += timedelta(days=1)
     return all_free
+
+
+# ── Schedule-on-write helper ───────────────────────────────────────────────────
+
+async def schedule_single_task(
+    db: AsyncSession,
+    gcal: GCalService,
+    user: User,
+    task: Task,
+) -> bool:
+    """
+    Attempt to schedule a single task immediately.
+
+    Returns True if the task was successfully placed in GCal.
+    Fails open: any error is logged and False is returned — the task
+    still exists in the DB with scheduled_at=None.
+    """
+    try:
+        result = await run_scheduler(db, gcal, user, task_ids=[task.id])
+        return result.scheduled > 0
+    except Exception as exc:
+        logger.warning("schedule_single_task failed for task %s: %s", task.id, exc)
+        return False

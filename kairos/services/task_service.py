@@ -1,6 +1,7 @@
 """Task business logic. CRUD + scheduling trigger."""
 
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,8 +12,27 @@ from kairos.models.task import Task, TaskStatus
 from kairos.models.user import User
 from kairos.schemas.task import TaskCreate, TaskUpdate
 
+if TYPE_CHECKING:
+    from kairos.services.gcal_service import GCalService
 
-async def create_task(db: AsyncSession, user: User, data: TaskCreate) -> Task:
+# Fields whose change warrants a reschedule attempt
+_SCHEDULING_FIELDS = frozenset({
+    "duration_mins",
+    "deadline",
+    "priority",
+    "schedulable",
+    "is_splittable",
+    "min_chunk_mins",
+    "buffer_mins",
+})
+
+
+async def create_task(
+    db: AsyncSession,
+    user: User,
+    data: TaskCreate,
+    gcal: "GCalService | None" = None,
+) -> Task:
     task = Task(
         user_id=user.id,
         title=data.title,
@@ -35,7 +55,16 @@ async def create_task(db: AsyncSession, user: User, data: TaskCreate) -> Task:
         task.tags = list(result.scalars().all())
     db.add(task)
     await db.flush()
-    return await _load_task(db, user, task.id)  # type: ignore[arg-type]
+
+    loaded = await _load_task(db, user, task.id)  # type: ignore[arg-type]
+
+    # Schedule-on-write: attempt to place the task in GCal immediately
+    if gcal and loaded and loaded.schedulable and loaded.duration_mins:
+        from kairos.services.scheduler import schedule_single_task
+        await schedule_single_task(db, gcal, user, loaded)
+        loaded = await _load_task(db, user, task.id)  # type: ignore[arg-type]
+
+    return loaded  # type: ignore[return-value]
 
 
 async def list_tasks(
@@ -109,7 +138,11 @@ async def get_task(db: AsyncSession, user: User, task_id: str) -> Task | None:
 
 
 async def update_task(
-    db: AsyncSession, user: User, task_id: str, data: TaskUpdate
+    db: AsyncSession,
+    user: User,
+    task_id: str,
+    data: TaskUpdate,
+    gcal: "GCalService | None" = None,
 ) -> Task | None:
     result = await db.execute(
         select(Task)
@@ -121,6 +154,7 @@ async def update_task(
         return None
 
     update_data = data.model_dump(exclude_unset=True)
+    scheduling_changed = bool(set(update_data.keys()) & _SCHEDULING_FIELDS)
     tag_ids = update_data.pop("tag_ids", None)
     metadata = update_data.pop("metadata", None)
 
@@ -137,7 +171,15 @@ async def update_task(
         task.tags = list(tag_result.scalars().all())
 
     await db.flush()
-    return await _load_task(db, user, task_id)
+    loaded = await _load_task(db, user, task_id)
+
+    # Re-evaluate schedule if any scheduling-relevant field changed
+    if gcal and loaded and scheduling_changed and loaded.schedulable and loaded.duration_mins:
+        from kairos.services.scheduler import schedule_single_task
+        await schedule_single_task(db, gcal, user, loaded)
+        loaded = await _load_task(db, user, task_id)
+
+    return loaded
 
 
 async def delete_task(db: AsyncSession, user: User, task_id: str) -> Task | None:

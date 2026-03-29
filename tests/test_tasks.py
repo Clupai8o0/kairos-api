@@ -2,6 +2,128 @@ import pytest
 from httpx import AsyncClient
 
 
+# ── Schedule-on-Write ─────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_create_schedulable_task_with_duration_gets_scheduled(
+    auth_client: AsyncClient,
+) -> None:
+    """A schedulable task with duration should be placed in GCal on creation."""
+    response = await auth_client.post(
+        "/tasks/",
+        json={
+            "title": "Write tests",
+            "schedulable": True,
+            "duration_mins": 60,
+            "deadline": "2026-12-01T17:00:00Z",
+        },
+    )
+    assert response.status_code == 201
+    data = response.json()
+    assert data["status"] == "scheduled"
+    assert data["scheduled_at"] is not None
+    assert data["scheduled_end"] is not None
+    assert data["gcal_event_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_create_task_without_duration_not_auto_scheduled(
+    auth_client: AsyncClient,
+) -> None:
+    """A task with no duration cannot be slotted — should stay unscheduled."""
+    response = await auth_client.post(
+        "/tasks/", json={"title": "Someday task", "schedulable": True}
+    )
+    assert response.status_code == 201
+    data = response.json()
+    assert data["status"] == "pending"
+    assert data["scheduled_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_task_with_schedulable_false_not_auto_scheduled(
+    auth_client: AsyncClient,
+) -> None:
+    """Opt-out tasks should never be auto-scheduled even with a duration."""
+    response = await auth_client.post(
+        "/tasks/",
+        json={"title": "Manual task", "schedulable": False, "duration_mins": 30},
+    )
+    assert response.status_code == 201
+    data = response.json()
+    assert data["status"] == "pending"
+    assert data["scheduled_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_update_task_adding_duration_triggers_schedule(
+    auth_client: AsyncClient,
+) -> None:
+    """Patching duration_mins onto a schedulable task re-evaluates scheduling."""
+    create = await auth_client.post(
+        "/tasks/",
+        json={"title": "No duration yet", "schedulable": True, "deadline": "2026-12-01T17:00:00Z"},
+    )
+    task_id = create.json()["id"]
+    assert create.json()["scheduled_at"] is None  # no duration → not scheduled
+
+    response = await auth_client.patch(f"/tasks/{task_id}", json={"duration_mins": 45})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "scheduled"
+    assert data["scheduled_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_update_task_non_scheduling_field_no_reschedule(
+    auth_client: AsyncClient,
+) -> None:
+    """Patching an unrelated field (title) must not trigger a second GCal write."""
+    create = await auth_client.post(
+        "/tasks/",
+        json={
+            "title": "Original title",
+            "schedulable": True,
+            "duration_mins": 30,
+            "deadline": "2026-12-01T17:00:00Z",
+        },
+    )
+    data = create.json()
+    task_id = data["id"]
+    first_event_id = data["gcal_event_id"]
+    assert first_event_id is not None
+
+    response = await auth_client.patch(f"/tasks/{task_id}", json={"title": "New title"})
+    assert response.status_code == 200
+    updated = response.json()
+    assert updated["title"] == "New title"
+    # GCal event should be unchanged
+    assert updated["gcal_event_id"] == first_event_id
+
+
+@pytest.mark.asyncio
+async def test_create_task_gcal_failure_fails_open(
+    auth_client: AsyncClient, mock_gcal
+) -> None:
+    """If GCal is unavailable on create, the task is still returned (scheduled_at=None)."""
+    import asyncio
+    from kairos.services.gcal_service import GCalAuthError
+
+    async def fail_get_free_busy(*args, **kwargs):
+        raise GCalAuthError("simulated GCal failure")
+
+    mock_gcal.get_free_busy = fail_get_free_busy  # type: ignore[method-assign]
+
+    response = await auth_client.post(
+        "/tasks/",
+        json={"title": "Task while GCal is down", "schedulable": True, "duration_mins": 30},
+    )
+    assert response.status_code == 201
+    data = response.json()
+    assert data["title"] == "Task while GCal is down"
+    assert data["scheduled_at"] is None
+
+
 # ── CRUD — Happy Path ─────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

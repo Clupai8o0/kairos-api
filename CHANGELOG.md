@@ -12,7 +12,7 @@
 
 **Last updated:** 2026-03-29
 
-**Build phase:** GCal integration + scheduling engine complete — ready for schedule-on-write + blackout days
+**Build phase:** Schedule-on-write complete — blackout days service next
 
 **What exists:**
 - [x] Project scaffold (pyproject.toml, directory structure)
@@ -22,16 +22,16 @@
 - [x] Pydantic schemas (Create/Update/Response for all entities)
 - [x] Alembic initial migration (generated + applied to local PostgreSQL)
 - [x] Auth (Google OAuth + API key + JWT)
-- [x] Task CRUD (fully wired — service + routes + 29 tests)
+- [x] Task CRUD (fully wired — service + routes + 35 tests)
 - [x] Project CRUD (fully wired — service + routes + 21 tests)
 - [x] Tag system (fully wired — service + routes + 17 tests)
 - [x] View system (fully wired — service + routes + 27 tests)
 - [x] GCal integration (`gcal_service.py` — free/busy, create/update/delete/list events)
 - [x] Scheduling engine (`scheduler.py` — urgency scoring, slot fitting, task splitting, dependency checks)
 - [x] Schedule API endpoints (POST /schedule/run, GET /schedule/today, GET /schedule/week, GET /schedule/free-slots)
-- [ ] Schedule-on-write (auto-schedule on task create/update)
+- [x] Schedule-on-write (auto-schedule on task create/update)
 - [ ] Blackout days (route stubs exist, service logic not wired)
-- [x] Tests passing (161 tests)
+- [x] Tests passing (167 tests)
 - [ ] OpenAPI docs reviewed
 
 **Known issues:**
@@ -75,6 +75,57 @@ TEMPLATE — Copy this block for each session:
 - Issue description
 
 -->
+
+### Session 2026-03-29 — Schedule-on-write
+
+**What was done:**
+- Added `schedule_single_task` to `kairos/services/scheduler.py` — thin wrapper around
+  `run_scheduler` for scheduling a single task; fails open (logs warning, returns False)
+  so task creation never blocks on GCal availability.
+- Updated `kairos/services/task_service.py`:
+  - `create_task` accepts optional `gcal: GCalService | None`. If the new task has
+    `schedulable=True` and `duration_mins` set, `schedule_single_task` is called
+    immediately and the loaded task includes `scheduled_at`/`gcal_event_id`.
+  - `update_task` accepts optional `gcal: GCalService | None` and detects whether any
+    scheduling-relevant field changed (`duration_mins`, `deadline`, `priority`,
+    `schedulable`, `is_splittable`, `min_chunk_mins`, `buffer_mins`). If yes and the
+    task remains schedulable with a duration, `schedule_single_task` is called.
+  - Added `_SCHEDULING_FIELDS` constant for the field set.
+- Updated `kairos/api/tasks.py` — `POST /tasks` and `PATCH /tasks/:id` now inject
+  `GCalService` via `Depends(get_gcal_service)` and pass it to the service functions.
+- Fixed latent bug in `kairos/services/scheduler.py`: `_to_utc` helper added.
+  SQLite strips timezone info when returning `DateTime(timezone=True)` columns, causing
+  `can't subtract offset-naive and offset-aware datetimes` errors. Fixed in
+  `calculate_urgency`, `_sort_key`, and `find_best_slot`.
+- Added 6 schedule-on-write tests to `tests/test_tasks.py`:
+  - `test_create_schedulable_task_with_duration_gets_scheduled`
+  - `test_create_task_without_duration_not_auto_scheduled`
+  - `test_create_task_with_schedulable_false_not_auto_scheduled`
+  - `test_update_task_adding_duration_triggers_schedule`
+  - `test_update_task_non_scheduling_field_no_reschedule`
+  - `test_create_task_gcal_failure_fails_open`
+
+**What changed:**
+- `kairos/services/scheduler.py` — `_to_utc` helper; updated `calculate_urgency`,
+  `_sort_key`, `find_best_slot`; added `schedule_single_task` at end of file
+- `kairos/services/task_service.py` — `gcal` param on `create_task`/`update_task`,
+  `_SCHEDULING_FIELDS` constant, scheduling trigger logic
+- `kairos/api/tasks.py` — `GCalService` dependency injected into create/update routes
+- `tests/test_tasks.py` — 6 new schedule-on-write tests added (35 total, 167 overall)
+
+**Decisions made:**
+- Keep `GCalService` out of `task_service.py` module-level imports (TYPE_CHECKING only)
+  to preserve clean module boundary; import done lazily inside functions at runtime.
+- Schedule-on-write only triggers on create/update — delete, complete, unschedule
+  routes are intentionally unchanged (no reschedule side-effects needed).
+
+**What's next:**
+- Wire blackout days service (`kairos/services/blackout_service.py`) — route stubs exist,
+  service logic is not yet implemented
+- Test live GCal integration once Google Cloud credentials are available
+
+**Issues/blockers discovered:**
+- SQLite datetime TZ-stripping was a latent bug in the scheduler (now fixed with `_to_utc`)
 
 ### Session 2026-03-29 — GCal integration + scheduling engine
 
