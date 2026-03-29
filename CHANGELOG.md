@@ -12,7 +12,7 @@
 
 **Last updated:** 2026-03-29
 
-**Build phase:** Schedule-on-write complete — blackout days service next
+**Build phase:** Blackout days complete — OpenAPI review next
 
 **What exists:**
 - [x] Project scaffold (pyproject.toml, directory structure)
@@ -30,8 +30,8 @@
 - [x] Scheduling engine (`scheduler.py` — urgency scoring, slot fitting, task splitting, dependency checks)
 - [x] Schedule API endpoints (POST /schedule/run, GET /schedule/today, GET /schedule/week, GET /schedule/free-slots)
 - [x] Schedule-on-write (auto-schedule on task create/update)
-- [ ] Blackout days (route stubs exist, service logic not wired)
-- [x] Tests passing (167 tests)
+- [x] Blackout days (fully wired — service + routes + 11 tests)
+- [x] Tests passing (175 tests)
 - [ ] OpenAPI docs reviewed
 
 **Known issues:**
@@ -75,6 +75,46 @@ TEMPLATE — Copy this block for each session:
 - Issue description
 
 -->
+
+### Session 2026-03-29 — Blackout days
+
+**What was done:**
+- Implemented `kairos/services/blackout_service.py` — `create_blackout_day`,
+  `list_blackout_days` (with optional `date_from`/`date_to` filters), `delete_blackout_day`.
+  Duplicate date raises `ValueError` (caught from `IntegrityError` on the unique constraint).
+- Replaced stub routes in `kairos/api/blackout_days.py` — all 3 endpoints wired with
+  auth + DB deps and proper response models. `POST` maps `ValueError` → 409.
+  `DELETE` returns 404 on missing record.
+- Replaced 3 stub tests in `tests/test_blackout_days.py` with 11 real tests:
+  - `test_create_blackout_day`
+  - `test_create_blackout_day_without_reason`
+  - `test_create_duplicate_blackout_returns_409`
+  - `test_list_blackout_days_empty`
+  - `test_list_blackout_days`
+  - `test_list_blackout_days_date_from_filter`
+  - `test_list_blackout_days_date_to_filter`
+  - `test_delete_blackout_day`
+  - `test_delete_nonexistent_blackout_day_returns_404`
+  - `test_blackout_days_require_auth`
+  - `test_scheduler_skips_blackout_day`
+
+**What changed:**
+- `kairos/services/blackout_service.py` — implemented from single-line stub
+- `kairos/api/blackout_days.py` — replaced stub routes with real implementations
+- `tests/test_blackout_days.py` — replaced 3 stub tests with 11 real tests (175 total)
+
+**Decisions made:**
+- `create_blackout_day` catches `IntegrityError` from the DB unique constraint
+  and re-raises as `ValueError` so the route layer handles it as HTTP 409.
+- `delete_blackout_day` returns a boolean rather than raising, consistent with
+  delete patterns used elsewhere (projects, tags, views).
+
+**What's next:**
+- Review OpenAPI docs (`/docs`) — verify all endpoint descriptions and response schemas
+- Test live GCal integration once Google Cloud credentials are available
+
+**Issues/blockers discovered:**
+- None
 
 ### Session 2026-03-29 — Schedule-on-write
 
