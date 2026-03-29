@@ -67,6 +67,9 @@ async def get_or_create_user(
             },
         )
         db.add(user)
+        await db.flush()
+        from kairos.services import view_service
+        await view_service.seed_default_views(db, user)
     else:
         user.google_id = google_id
         user.google_access_token = access_token

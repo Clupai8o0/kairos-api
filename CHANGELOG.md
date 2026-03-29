@@ -12,7 +12,7 @@
 
 **Last updated:** 2026-03-29
 
-**Build phase:** Tag CRUD complete — ready for View CRUD implementation
+**Build phase:** View CRUD complete — ready for Blackout Days implementation
 
 **What exists:**
 - [x] Project scaffold (pyproject.toml, directory structure)
@@ -25,12 +25,12 @@
 - [x] Task CRUD (fully wired — service + routes + 29 tests)
 - [x] Project CRUD (fully wired — service + routes + 21 tests)
 - [x] Tag system (fully wired — service + routes + 17 tests)
-- [ ] View system (route stubs exist, service logic not wired)
+- [x] View system (fully wired — service + routes + 27 tests)
 - [ ] GCal integration (read free/busy, write events)
 - [ ] Scheduling engine
 - [ ] Schedule-on-write (auto-schedule on task create/update)
 - [ ] Blackout days (route stubs exist, service logic not wired)
-- [x] Tests passing (95 tests)
+- [x] Tests passing (116 tests)
 - [ ] OpenAPI docs reviewed
 
 **Known issues:**
@@ -74,6 +74,42 @@ TEMPLATE — Copy this block for each session:
 - Issue description
 
 -->
+
+### Session 2026-03-29 — View CRUD implementation
+
+**What was done:**
+- Implemented `kairos/services/view_service.py` — full CRUD: `create_view`, `list_views`,
+  `get_view`, `update_view`, `delete_view`, `execute_view`, `seed_default_views`
+- Rewrote `kairos/api/views.py` — all 6 routes wired with auth + DB deps, proper
+  response models and 404 handling. `DELETE` is a hard delete (returns 204).
+  `GET /:id/tasks` executes the view's `filter_config` and returns matching tasks.
+- Updated `kairos/schemas/view.py` — added `Field(min_length=1, max_length=200)` on
+  `name`, added `position: int = 0` to `ViewCreate`, added `ViewListResponse`
+- Wired `seed_default_views` into `auth_service.get_or_create_user` for new users —
+  Today, This Week, Unscheduled, High Priority views created on first OAuth login
+- Replaced 6 stub tests in `tests/test_views.py` with 27 real tests
+
+**What changed:**
+- `kairos/schemas/view.py` — `ViewCreate.name` now has `min_length=1, max_length=200`;
+  `ViewCreate` now has `position` field; added `ViewListResponse`
+- `kairos/api/views.py` — fully replaced stubs; all routes wired with auth + DB deps
+- `kairos/services/view_service.py` — implemented from empty stub
+- `kairos/services/auth_service.py` — `get_or_create_user` seeds default views for new users
+
+**Decisions made:**
+- `execute_view` resolves `tags_include`/`tags_exclude` by tag **name** (not ID) — matches
+  the data model spec; looks up tag IDs from names then applies AND inclusion / NOT IN exclusion
+- `due_within_days` computed as `now + N days` cutoff on `Task.deadline`
+- `DELETE /views/:id` returns 204 (hard delete, consistent with tags)
+- `seed_default_views` is idempotent — checks existing default view names before creating
+
+**What's next:**
+- Implement Blackout Days CRUD (`kairos/services/blackout_service.py` + `kairos/api/blackout_days.py`)
+  and upgrade `tests/test_blackout_days.py` from stubs to real tests
+- After blackout days: GCal integration + scheduling engine
+
+**Issues/blockers discovered:**
+- None
 
 ### Session 2026-03-29 — Tag CRUD implementation
 
