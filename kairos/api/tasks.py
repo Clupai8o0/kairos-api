@@ -21,13 +21,21 @@ async def create_task(
     current_user: User = Depends(get_current_user),
     gcal: GCalService = Depends(get_gcal_service),
 ) -> TaskResponse:
+    """Create a task.
+
+    If `schedulable=true` and `duration_mins` is set the scheduler runs immediately,
+    finds the next free GCal slot before the deadline, and returns the task with
+    `scheduled_at`, `scheduled_end`, and `gcal_event_id` populated.
+    If GCal is unavailable, the task is saved with `scheduled_at=null` and can be
+    retried via `POST /schedule/run`.
+    """
     task = await task_service.create_task(db, current_user, data, gcal=gcal)
     return task  # type: ignore[return-value]
 
 
 @router.get("/", response_model=TaskListResponse)
 async def list_tasks(
-    status: str | None = Query(default=None),
+    status: str | None = Query(default=None, description="Comma-separated statuses: `pending,scheduled,done,cancelled`"),
     priority: str | None = Query(default=None),
     project_id: str | None = Query(default=None),
     tag_ids: str | None = Query(default=None),
@@ -44,6 +52,11 @@ async def list_tasks(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> TaskListResponse:
+    """List tasks with optional filters, sorting, and pagination.
+
+    `tag_ids` uses AND logic — only tasks that have **all** specified tags are returned.
+    `search` does a case-insensitive keyword match on title and description.
+    """
     tasks, total = await task_service.list_tasks(
         db,
         current_user,
@@ -69,6 +82,7 @@ async def get_task(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> TaskResponse:
+    """Return a single task including all fields, tags, and project association."""
     task = await task_service.get_task(db, current_user, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -83,6 +97,11 @@ async def update_task(
     current_user: User = Depends(get_current_user),
     gcal: GCalService = Depends(get_gcal_service),
 ) -> TaskResponse:
+    """Partially update a task. Send only the fields to change.
+
+    Changing `duration_mins`, `deadline`, or `priority` triggers re-scheduling.
+    The GCal event is updated or removed according to the new values.
+    """
     task = await task_service.update_task(db, current_user, task_id, data, gcal=gcal)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -95,6 +114,7 @@ async def delete_task(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> TaskResponse:
+    """Soft-delete a task — sets `status` to `cancelled` and removes its GCal event."""
     task = await task_service.delete_task(db, current_user, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -107,6 +127,11 @@ async def complete_task(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> TaskResponse:
+    """Mark a task as done.
+
+    Sets `status=done`, records `completed_at`, and removes the GCal event
+    (the time block is no longer needed).
+    """
     task = await task_service.complete_task(db, current_user, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -119,6 +144,11 @@ async def unschedule_task(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> TaskResponse:
+    """Remove a task from the calendar without deleting it.
+
+    Clears `scheduled_at`, `scheduled_end`, and `gcal_event_id`.
+    Sets `status` back to `pending`. Run `POST /schedule/run` to reschedule.
+    """
     task = await task_service.unschedule_task(db, current_user, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")

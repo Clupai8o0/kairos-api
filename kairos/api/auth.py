@@ -46,7 +46,12 @@ def _build_flow() -> Flow:
 
 @router.get("/google/login")
 async def google_login() -> RedirectResponse:
-    """Redirect to Google OAuth consent screen."""
+    """Redirect to the Google OAuth consent screen.
+
+    Requested scopes: `openid email profile calendar`.
+    After consent, Google redirects to `GET /auth/google/callback`.
+    This endpoint does **not** require authentication.
+    """
     flow = _build_flow()
     auth_url, _ = flow.authorization_url(
         access_type="offline",
@@ -61,7 +66,12 @@ async def google_callback(
     code: str,
     db: AsyncSession = Depends(get_db),
 ) -> TokenResponse:
-    """Exchange Google auth code for tokens, create/update user, return JWT."""
+    """Handle the Google OAuth callback.
+
+    Exchanges the authorization `code` for tokens, creates or updates the user record,
+    and returns a signed JWT. Pass the JWT as `Authorization: Bearer <token>` on all
+    subsequent requests. This endpoint does **not** require prior authentication.
+    """
     flow = _build_flow()
 
     try:
@@ -115,7 +125,11 @@ async def create_api_key(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> ApiKeyResponse:
-    """Generate a new API key for the authenticated user (replaces any existing key)."""
+    """Generate a new API key for agent or automation access.
+
+    The key is prefixed `kairos_sk_` and can be used as a Bearer token.
+    Calling this endpoint **replaces** any previously issued API key for this user.
+    """
     key = await generate_api_key(db, current_user)
     return ApiKeyResponse(api_key=key)
 
@@ -124,5 +138,5 @@ async def create_api_key(
 async def get_me(
     current_user: User = Depends(get_current_user),
 ) -> UserResponse:
-    """Return the currently authenticated user."""
+    """Return the currently authenticated user's profile."""
     return UserResponse.model_validate(current_user)

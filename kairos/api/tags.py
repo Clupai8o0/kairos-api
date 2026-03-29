@@ -23,6 +23,11 @@ async def create_tag(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> TagResponse:
+    """Create a tag. Returns 409 if a tag with that name already exists.
+
+    Use a consistent naming convention to keep tags organised:
+    `area:work`, `context:laptop`, `type:deep-work`.
+    """
     tag = await tag_service.create_tag(db, current_user, data)
     if tag is None:
         raise HTTPException(status_code=409, detail="Tag name already exists")
@@ -34,6 +39,7 @@ async def list_tags(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> TagListResponse:
+    """List all tags with usage counts (`task_count`, `project_count`)."""
     rows = await tag_service.list_tags(db, current_user)
     tags = [
         TagWithCountsResponse(
@@ -58,6 +64,7 @@ async def update_tag(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> TagResponse:
+    """Update a tag's name, colour, or icon. Returns 409 if the new name conflicts."""
     try:
         tag = await tag_service.update_tag(db, current_user, tag_id, data)
     except IntegrityError:
@@ -73,6 +80,7 @@ async def delete_tag(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> None:
+    """Hard-delete a tag and remove it from all task and project associations."""
     deleted = await tag_service.delete_tag(db, current_user, tag_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Tag not found")

@@ -36,7 +36,15 @@ async def run_schedule(
     user: User = Depends(get_current_user),
     gcal: GCalService = Depends(get_gcal_service),
 ) -> ScheduleRunResponse:
-    """Trigger a scheduling run. Schedules all pending tasks, or a specific subset."""
+    """Trigger a full reschedule for pending/scheduled tasks.
+
+    - Omit `task_ids` to reschedule **all** pending tasks.
+    - Supply `task_ids` to reschedule only those tasks.
+    - `dry_run=true` returns what would change without writing to Google Calendar.
+
+    The response includes `scheduled` (placed), `failed` (no slot found before deadline),
+    `skipped` (dependencies unmet or already done), and `details`.
+    """
     result = await run_scheduler(db, gcal, user, task_ids=payload.task_ids)
     return ScheduleRunResponse(
         scheduled=result.scheduled,
@@ -51,7 +59,7 @@ async def schedule_today(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> list[ScheduledTaskResponse]:
-    """Return all tasks scheduled for today."""
+    """Return all tasks scheduled for today, ordered by start time."""
     now = datetime.now(timezone.utc)
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     end = start + timedelta(days=1)
@@ -83,7 +91,7 @@ async def schedule_week(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> list[ScheduledTaskResponse]:
-    """Return all tasks scheduled for the current week (Mon–Sun)."""
+    """Return all tasks scheduled for the current week (Mon–Sun), ordered by start time."""
     now = datetime.now(timezone.utc)
     monday = now - timedelta(days=now.weekday())
     start = monday.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -118,7 +126,14 @@ async def free_slots(
     user: User = Depends(get_current_user),
     gcal: GCalService = Depends(get_gcal_service),
 ) -> list[FreeSlotResponse]:
-    """Return free time slots across the next N days (default 7)."""
+    """Return available time slots within the next N days.
+
+    Only slots within the user's configured work hours are included.
+    Weekends are excluded. Returned slots are already clipped to the current time
+    (no past slots). `days` is clamped to 1–30.
+
+    If Google Calendar is unavailable, returns an empty list (does not error).
+    """
     now = datetime.now(timezone.utc)
     horizon_end = now + timedelta(days=max(1, min(days, 30)))
 

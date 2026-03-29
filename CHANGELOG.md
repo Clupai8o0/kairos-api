@@ -12,7 +12,7 @@
 
 **Last updated:** 2026-03-29
 
-**Build phase:** Blackout days complete — OpenAPI review next
+**Build phase:** OpenAPI docs complete — v1 feature-complete
 
 **What exists:**
 - [x] Project scaffold (pyproject.toml, directory structure)
@@ -32,7 +32,7 @@
 - [x] Schedule-on-write (auto-schedule on task create/update)
 - [x] Blackout days (fully wired — service + routes + 11 tests)
 - [x] Tests passing (175 tests)
-- [ ] OpenAPI docs reviewed
+- [x] OpenAPI docs reviewed
 
 **Known issues:**
 - `uv` not installed on this machine — used `python3.12 -m venv` + `pip` instead. README documents `uv` as the recommended approach.
@@ -75,6 +75,38 @@ TEMPLATE — Copy this block for each session:
 - Issue description
 
 -->
+
+### Session 2026-03-29 — OpenAPI docs review
+
+**What was done:**
+- Added `_DESCRIPTION` (markdown) and `_OPENAPI_TAGS` to `kairos/main.py`:
+  - App description covers auth methods, auto-scheduling behaviour, and GCal fail-open semantics
+  - Tag descriptions for all 7 groups (auth, tasks, projects, tags, views, schedule, blackout-days)
+  - Added `contact` metadata to `FastAPI()` constructor
+- Added informative docstrings to every endpoint across all 7 route files:
+  - `tasks.py` — 7 endpoints: auto-schedule on write, soft-delete, unschedule/complete semantics
+  - `projects.py` — 6 endpoints: soft-delete no-cascade note, flat-structure note
+  - `tags.py` — 4 endpoints: 409-on-dup, hard-delete + cascade associations
+  - `views.py` — 6 endpoints: view execution model explained
+  - `blackout_days.py` — 3 endpoints: 409-on-dup, added `description=` to `Query` params
+  - `auth.py` — 4 endpoints: OAuth scopes, no-auth note on public endpoints, key replacement
+  - `schedule.py` — 4 endpoints: dry-run flag, GCal fail-open on free-slots, days clamping
+
+**What changed:**
+- No behaviour changed — documentation only, all 175 tests pass
+
+**Decisions made:**
+- `/schedule/free-slots` query param is `days` (integer horizon), not `start`/`end` as the
+  original contract specified. This divergence is noted. The implementation is simpler and
+  consistent with the scheduler's horizon model. Contract will need updating if a frontend requires explicit date ranges.
+
+**What's next:**
+- Google Cloud project setup to test live OAuth + GCal integration end-to-end
+- Update `references/api-contract.md` to reflect the `days` param on `/schedule/free-slots`
+- Consider adding an `openapi_extra` security scheme declaration (HTTPBearer + API key)
+
+**Issues/blockers discovered:**
+- None
 
 ### Session 2026-03-29 — Blackout days
 

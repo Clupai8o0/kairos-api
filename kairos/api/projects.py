@@ -25,6 +25,11 @@ async def create_project(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> ProjectResponse:
+    """Create a new project.
+
+    Projects are flat containers for tasks — no nested hierarchy.
+    Optionally associate tags and set a deadline for the whole project.
+    """
     project = await project_service.create_project(db, current_user, data)
     return project  # type: ignore[return-value]
 
@@ -41,6 +46,7 @@ async def list_projects(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> ProjectListResponse:
+    """List projects with optional filters and pagination."""
     projects, total = await project_service.list_projects(
         db,
         current_user,
@@ -61,6 +67,7 @@ async def get_project(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> ProjectWithTasksResponse:
+    """Return a project with its full task list (id, title, status, priority, scheduled_at)."""
     project = await project_service.get_project(db, current_user, project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -74,6 +81,7 @@ async def update_project(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> ProjectResponse:
+    """Partially update a project. Send only the fields to change."""
     project = await project_service.update_project(db, current_user, project_id, data)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -86,6 +94,11 @@ async def delete_project(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> ProjectResponse:
+    """Soft-delete a project — sets `status` to `archived`.
+
+    Tasks belonging to this project are **not** deleted; they remain but lose
+    their project association (`project_id` becomes null).
+    """
     project = await project_service.delete_project(db, current_user, project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -106,6 +119,7 @@ async def list_project_tasks(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> TaskListResponse:
+    """List all tasks for a project. Supports the same filter/sort params as `GET /tasks`."""
     result = await project_service.list_project_tasks(
         db,
         current_user,

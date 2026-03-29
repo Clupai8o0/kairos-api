@@ -17,6 +17,11 @@ async def create_view(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> ViewResponse:
+    """Create a saved view.
+
+    A view is a named filter + sort configuration. Execute it via `GET /views/{id}/tasks`
+    to get a live filtered task list without re-specifying the criteria each time.
+    """
     view = await view_service.create_view(db, current_user, data)
     return view  # type: ignore[return-value]
 
@@ -26,6 +31,7 @@ async def list_views(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> ViewListResponse:
+    """List all saved views ordered by `position`."""
     views = await view_service.list_views(db, current_user)
     return ViewListResponse(views=views)  # type: ignore[arg-type]
 
@@ -36,6 +42,7 @@ async def get_view(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> ViewResponse:
+    """Return view metadata including its `filter_config` and `sort_config`."""
     view = await view_service.get_view(db, current_user, view_id)
     if view is None:
         raise HTTPException(status_code=404, detail="View not found")
@@ -63,6 +70,7 @@ async def update_view(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> ViewResponse:
+    """Partially update a view's filter, sort, name, icon, or position."""
     view = await view_service.update_view(db, current_user, view_id, data)
     if view is None:
         raise HTTPException(status_code=404, detail="View not found")
@@ -75,6 +83,7 @@ async def delete_view(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> None:
+    """Hard-delete a view. Tasks are not affected."""
     deleted = await view_service.delete_view(db, current_user, view_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="View not found")
