@@ -12,7 +12,7 @@
 
 **Last updated:** 2026-03-29
 
-**Build phase:** Task CRUD complete — ready for Project CRUD implementation
+**Build phase:** Project CRUD complete — ready for Tag CRUD implementation
 
 **What exists:**
 - [x] Project scaffold (pyproject.toml, directory structure)
@@ -23,14 +23,14 @@
 - [x] Alembic initial migration (generated + applied to local PostgreSQL)
 - [x] Auth (Google OAuth + API key + JWT)
 - [x] Task CRUD (fully wired — service + routes + 29 tests)
-- [ ] Project CRUD (route stubs exist, service logic not wired)
+- [x] Project CRUD (fully wired — service + routes + 21 tests)
 - [ ] Tag system (route stubs exist, service logic not wired)
 - [ ] View system (route stubs exist, service logic not wired)
 - [ ] GCal integration (read free/busy, write events)
 - [ ] Scheduling engine
 - [ ] Schedule-on-write (auto-schedule on task create/update)
 - [ ] Blackout days (route stubs exist, service logic not wired)
-- [x] Tests passing (66 tests — previous 36 + 29 task CRUD tests + 1 updated health test)
+- [x] Tests passing (82 tests — 66 previous + 21 project CRUD tests - 5 replaced stubs)
 - [ ] OpenAPI docs reviewed
 
 **Known issues:**
@@ -74,6 +74,40 @@ TEMPLATE — Copy this block for each session:
 - Issue description
 
 -->
+
+### Session 2026-03-29 — Project CRUD implementation
+
+**What was done:**
+- Implemented `kairos/services/project_service.py` — full CRUD: `create_project`,
+  `list_projects`, `get_project`, `update_project`, `delete_project`, `list_project_tasks`
+- Rewrote `kairos/api/projects.py` — all 6 routes wired with auth + DB deps, proper
+  response models and 404 handling. `DELETE` is a soft delete (status → archived, returns 200).
+  Added `GET /:id/tasks` sub-resource.
+- Updated `kairos/schemas/project.py` — added `metadata_json` alias to `ProjectResponse`
+  (same pattern as `TaskResponse`), added embedded `TagResponse`, `TaskSummary` for nested
+  tasks, `ProjectWithTasksResponse` for `GET /:id`, and `ProjectListResponse` with pagination
+- Replaced stub tests in `tests/test_projects.py` with 21 real CRUD + filter + auth + error tests
+
+**What changed:**
+- `kairos/api/projects.py` — fully replaced stubs; `DELETE` returns 200 with archived project
+  (was 204 no body); `GET /` returns `ProjectListResponse` (was `[]`)
+- `kairos/schemas/project.py` — `ProjectResponse.metadata` now uses
+  `validation_alias='metadata_json'`; `tags`, `TaskSummary`, `ProjectWithTasksResponse`,
+  `ProjectListResponse` added
+
+**Decisions made:**
+- `DELETE /projects/:id` returns 200 with the soft-deleted project (status=archived) — consistent
+  with task delete behaviour, more useful than 204
+- `delete_project` unlinks tasks via a bulk `UPDATE tasks SET project_id = NULL` (SQLAlchemy
+  core `sa_update`) — avoids loading all tasks into memory
+
+**What's next:**
+- Implement Tag CRUD (`kairos/services/tag_service.py` + `kairos/api/tags.py`)
+  and upgrade `tests/test_tags.py` from stubs to real tests
+- After tags: View CRUD
+
+**Issues/blockers discovered:**
+- None
 
 ### Session 2026-03-29 — Task CRUD implementation
 
