@@ -12,7 +12,7 @@
 
 **Last updated:** 2026-03-29
 
-**Build phase:** View CRUD complete — ready for Blackout Days implementation
+**Build phase:** GCal integration + scheduling engine complete — ready for schedule-on-write + blackout days
 
 **What exists:**
 - [x] Project scaffold (pyproject.toml, directory structure)
@@ -26,11 +26,12 @@
 - [x] Project CRUD (fully wired — service + routes + 21 tests)
 - [x] Tag system (fully wired — service + routes + 17 tests)
 - [x] View system (fully wired — service + routes + 27 tests)
-- [ ] GCal integration (read free/busy, write events)
-- [ ] Scheduling engine
+- [x] GCal integration (`gcal_service.py` — free/busy, create/update/delete/list events)
+- [x] Scheduling engine (`scheduler.py` — urgency scoring, slot fitting, task splitting, dependency checks)
+- [x] Schedule API endpoints (POST /schedule/run, GET /schedule/today, GET /schedule/week, GET /schedule/free-slots)
 - [ ] Schedule-on-write (auto-schedule on task create/update)
 - [ ] Blackout days (route stubs exist, service logic not wired)
-- [x] Tests passing (116 tests)
+- [x] Tests passing (161 tests)
 - [ ] OpenAPI docs reviewed
 
 **Known issues:**
@@ -74,6 +75,55 @@ TEMPLATE — Copy this block for each session:
 - Issue description
 
 -->
+
+### Session 2026-03-29 — GCal integration + scheduling engine
+
+**What was done:**
+- Implemented `kairos/services/gcal_service.py` — full `GCalService` class:
+  `get_free_busy`, `create_event`, `update_event`, `delete_event`, `get_events`.
+  Token refresh handled transparently via `_get_valid_credentials`. `GCalAuthError`
+  raised on 401/403 so callers can return a clean 401 to the client.
+- Implemented `kairos/services/scheduler.py` — full scheduling engine:
+  `calculate_urgency`, `get_free_slots`, `find_best_slot`, `split_task`,
+  `can_schedule`, `run_scheduler`. Handles blackout days, work hours, buffer time,
+  task splitting across multiple GCal events, dependency checks, conflict retry (×3),
+  and fail-open on GCal unavailability.
+- Wired `kairos/api/schedule.py` — all 4 endpoints implemented with auth + DB:
+  `POST /schedule/run` (full or targeted run), `GET /schedule/today`,
+  `GET /schedule/week`, `GET /schedule/free-slots?days=N`.
+- Added `get_gcal_service` FastAPI dependency to `kairos/core/deps.py`.
+- Updated `kairos/schemas/schedule.py` — added `FreeSlotResponse`, `ScheduledTaskResponse`.
+- Created `tests/mocks.py` — `MockGCalService` with `add_busy_slot` helper.
+- Updated `tests/conftest.py` — `mock_gcal` fixture; `auth_client` now overrides
+  `get_gcal_service` so all API tests use the mock.
+- Created `tests/test_gcal_service.py` — 9 tests for mock GCal operations.
+- Created `tests/test_scheduler.py` — 22 tests covering urgency scoring, free slot
+  computation, slot selection, task splitting, dependency checks, and full integration.
+- Rewrote `tests/test_schedule_endpoints.py` — 13 real tests replacing 4 stubs.
+  Auth on all endpoints verified. Schedule run, today/week views, free-slots all tested.
+
+**What changed:**
+- `kairos/services/gcal_service.py` — implemented from empty stub
+- `kairos/services/scheduler.py` — implemented from empty stub
+- `kairos/api/schedule.py` — replaced 4 stub routes with real implementations
+- `kairos/schemas/schedule.py` — added `FreeSlotResponse`, `ScheduledTaskResponse`
+- `kairos/core/deps.py` — added `get_gcal_service` dependency
+- `tests/conftest.py` — `mock_gcal` fixture added; `auth_client` now overrides GCal dep
+- `tests/test_schedule_endpoints.py` — replaced stub tests with real tests
+
+**Decisions made:**
+- `GCalService` uses `asyncio.to_thread` for all Google API calls (sync SDK run in executor)
+- `MockGCalService` returns `BusySlot` objects (not dicts) to match the real service contract
+- `get_gcal_service` dep injects the current `db` session so token refreshes are persisted
+
+**What's next:**
+- Wire schedule-on-write: call `run_scheduler` from `task_service.create_task` /
+  `task_service.update_task` when scheduling-relevant fields change
+- Implement blackout days service (route stubs already exist in `api/blackout_days.py`)
+
+**Issues/blockers discovered:**
+- Live GCal integration untestable until Google Cloud project is configured
+  (CLIENT_ID + CLIENT_SECRET). All GCal tests use `MockGCalService`.
 
 ### Session 2026-03-29 — View CRUD implementation
 

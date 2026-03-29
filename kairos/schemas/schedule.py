@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel
 
 
@@ -10,3 +12,18 @@ class ScheduleRunResponse(BaseModel):
     failed: int
     skipped: int
     details: list[dict] = []
+
+
+class FreeSlotResponse(BaseModel):
+    start: datetime
+    end: datetime
+    duration_mins: float
+
+
+class ScheduledTaskResponse(BaseModel):
+    task_id: str
+    title: str
+    start: datetime
+    end: datetime
+    gcal_event_id: str | None
+

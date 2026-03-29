@@ -84,10 +84,22 @@ async def test_user(db_session):
     return user
 
 
+# ── Mock GCal fixture ─────────────────────────────────────────────────
+
 @pytest_asyncio.fixture
-async def auth_client(db_session, test_user):
-    """Async test client with DB override + auth override (always returns test_user)."""
+async def mock_gcal():
+    """Return a fresh MockGCalService for each test."""
+    from tests.mocks import MockGCalService
+    return MockGCalService()
+
+
+# ── Auth + DB + GCal client ──────────────────────────────────────────
+
+@pytest_asyncio.fixture
+async def auth_client(db_session, test_user, mock_gcal):
+    """Async test client with DB override + auth override + mock GCal."""
     from kairos.core.auth import get_current_user
+    from kairos.core.deps import get_gcal_service
 
     app = create_app()
 
@@ -97,8 +109,12 @@ async def auth_client(db_session, test_user):
     async def override_auth():
         return test_user
 
+    def override_gcal():
+        return mock_gcal
+
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[get_current_user] = override_auth
+    app.dependency_overrides[get_gcal_service] = override_gcal
 
     async with AsyncClient(
         transport=ASGITransport(app=app),
