@@ -78,6 +78,30 @@ TEMPLATE — Copy this block for each session:
 
 ### Session 2026-03-30 — All-day Google event handling parity
 
+### Session 2026-03-30 — Fix asyncpg manual transaction collision on request auth/query path
+
+**What was done:**
+- Hardened DB engine pooling config with `pool_pre_ping=True` and
+  `pool_reset_on_return="rollback"`.
+- Updated request DB dependency to use `async with session.begin()` so each request has
+  a single managed transaction lifecycle (commit/rollback exactly once).
+
+**What changed:**
+- Prevents intermittent `cannot use Connection.transaction() in a manually started transaction`
+  errors seen on authenticated request paths (e.g. `POST /tasks`).
+
+**Decisions made:**
+- Prefer explicit transaction-scoped request handling over manual commit/rollback in the
+  dependency finalizer.
+
+**What's next:**
+- Monitor local dev logs after reload cycles to confirm no recurrence.
+
+**Issues/blockers discovered:**
+- None
+
+### Session 2026-03-30 — All-day Google event handling parity
+
 **What was done:**
 - Updated GCal event parsing to treat date-only payloads as all-day events in the legacy
   `get_events` path (no longer dropped).
