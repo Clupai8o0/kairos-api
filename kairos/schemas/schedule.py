@@ -32,11 +32,23 @@ class ScheduledTaskResponse(BaseModel):
 
 
 class GCalEventItem(BaseModel):
-    id: str
+    event_id: str
+    provider: Literal["google"] = "google"
+    account_id: str
+    calendar_id: str
+    calendar_name: str
     summary: str
+    description: str | None = None
+    location: str | None = None
     start: datetime
     end: datetime
-    description: str | None = None
+    timezone: str | None = None
+    is_all_day: bool
+    is_recurring_instance: bool
+    recurring_event_id: str | None = None
+    html_link: str | None = None
+    can_edit: bool
+    etag: str | None = None
 
 
 class ScheduleItem(BaseModel):

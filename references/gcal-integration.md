@@ -3,6 +3,9 @@
 Kairos uses Google Calendar API v3 as the time source of truth.
 All calendar operations go through `services/gcal_service.py`.
 
+Current implementation supports merged event reads across all linked Google
+accounts and selected calendars, plus in-app event detail + update APIs.
+
 ---
 
 ## Table of Contents
@@ -38,6 +41,9 @@ SCOPES = [
 ```
 
 Using `auth/calendar` (not `auth/calendar.readonly`) because we need to write events.
+
+If write scope is missing, API returns `403` with code `calendar_write_scope_missing`
+and an action hint to trigger re-consent.
 
 ---
 
@@ -97,6 +103,44 @@ class GCalService:
         calendar_id: str = "primary",
     ) -> list[GCalEvent]:
         """List all events in a time range (for schedule/today endpoint)."""
+
+    async def list_connected_calendars(self, user: User) -> list[GoogleCalendarInfo]:
+        """Return linked accounts and calendar metadata (selected/read-only/write)."""
+
+    async def get_schedule_events(
+        self,
+        user: User,
+        time_min: datetime,
+        time_max: datetime,
+    ) -> list[GoogleScheduleEvent]:
+        """Merged events from all selected calendars across all linked accounts."""
+
+    async def get_event_detail(
+        self,
+        user: User,
+        event_id: str,
+        account_id: str,
+        calendar_id: str,
+    ) -> GoogleScheduleEvent:
+        """Fetch one event for edit prefill."""
+
+    async def patch_event(
+        self,
+        user: User,
+        event_id: str,
+        account_id: str,
+        calendar_id: str,
+        *,
+        etag: str | None,
+        mode: str,
+        summary: str | None,
+        description: str | None,
+        location: str | None,
+        start: datetime | None,
+        end: datetime | None,
+        timezone_name: str | None,
+    ) -> GoogleScheduleEvent:
+        """Patch event or recurring series with optimistic concurrency."""
 ```
 
 ---
@@ -267,6 +311,11 @@ Google Calendar API allows:
 
 For single-user v1, rate limits won't be an issue.
 
+Reliability additions:
+- Retries with exponential backoff for `429`, `500`, `503`, and transient network errors
+- Cached Google `calendarList` responses for 5 minutes per linked account
+- Concurrent event window fetches with bounded concurrency for week views
+
 ---
 
 ## Testing Strategy
@@ -311,3 +360,9 @@ app.dependency_overrides[get_gcal_service] = lambda: mock_gcal
 ```
 
 This lets you test the scheduler end-to-end without GCal API calls.
+
+For calendar APIs, mocks should also cover:
+- multiple accounts and calendars
+- read-only calendar (`calendar_read_only`)
+- etag conflict (`calendar_event_etag_mismatch`)
+- recurring instance metadata (`is_recurring_instance`, `recurring_event_id`)

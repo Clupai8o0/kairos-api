@@ -3,8 +3,9 @@
 import logging
 from collections import defaultdict
 from datetime import datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Query, status
 from fastapi.routing import APIRouter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -61,8 +62,10 @@ async def run_schedule(
 
 @router.get("/today", response_model=ScheduleTodayResponse)
 async def schedule_today(
+    day: str | None = Query(default=None, description="YYYY-MM-DD in user timezone"),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
+    gcal: GCalService = Depends(get_gcal_service),
 ) -> ScheduleTodayResponse:
     """Return all tasks scheduled for today as a `ScheduleTodayResponse`.
 
@@ -70,9 +73,35 @@ async def schedule_today(
     GCal-only events (non-task blocks) are not included in v1.
     Items are ordered by scheduled start time.
     """
-    now = datetime.now(timezone.utc)
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    end = start + timedelta(days=1)
+    tz_name = user.preferences.get("timezone", "UTC")
+    try:
+        user_tz = ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "invalid_timezone",
+                "message": f"Unsupported timezone: {tz_name}",
+            },
+        ) from exc
+
+    if day:
+        try:
+            local_start = datetime.fromisoformat(f"{day}T00:00:00").replace(tzinfo=user_tz)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "code": "invalid_date",
+                    "message": "day must be YYYY-MM-DD",
+                },
+            ) from exc
+    else:
+        local_start = datetime.now(user_tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    local_end = local_start + timedelta(days=1)
+
+    start = local_start.astimezone(timezone.utc)
+    end = local_end.astimezone(timezone.utc)
 
     rows = await db.execute(
         select(Task)
@@ -86,28 +115,113 @@ async def schedule_today(
         .order_by(Task.scheduled_at)
     )
     tasks = rows.scalars().all()
-    items = [
+    items: list[ScheduleItem] = [
         ScheduleItem(type="task", task=TaskResponse.model_validate(t))
         for t in tasks
         if t.scheduled_at and t.scheduled_end
     ]
-    return ScheduleTodayResponse(date=now.date().isoformat(), items=items)
+
+    try:
+        events = await gcal.get_schedule_events(user, start, end)
+    except GCalAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "google_auth_required",
+                "message": str(exc),
+            },
+        ) from exc
+
+    for event in events:
+        items.append(
+            ScheduleItem(
+                type="event",
+                gcal_event={
+                    "event_id": event.event_id,
+                    "provider": "google",
+                    "account_id": event.account_id,
+                    "calendar_id": event.calendar_id,
+                    "calendar_name": event.calendar_name,
+                    "summary": event.summary,
+                    "description": event.description,
+                    "location": event.location,
+                    "start": event.start,
+                    "end": event.end,
+                    "timezone": event.timezone,
+                    "is_all_day": event.is_all_day,
+                    "is_recurring_instance": event.is_recurring_instance,
+                    "recurring_event_id": event.recurring_event_id,
+                    "html_link": event.html_link,
+                    "can_edit": event.can_edit,
+                    "etag": event.etag,
+                },
+            )
+        )
+
+    items.sort(
+        key=lambda item: (
+            item.task.scheduled_at if item.task else item.gcal_event.start,  # type: ignore[union-attr]
+            item.type,
+        )
+    )
+    return ScheduleTodayResponse(date=local_start.date().isoformat(), items=items)
 
 
 @router.get("/week", response_model=list[ScheduleTodayResponse])
 async def schedule_week(
+    start_date: str | None = Query(default=None, description="YYYY-MM-DD in user timezone"),
+    end_date: str | None = Query(default=None, description="YYYY-MM-DD exclusive in user timezone"),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
+    gcal: GCalService = Depends(get_gcal_service),
 ) -> list[ScheduleTodayResponse]:
     """Return the current week's schedule (Mon–Sun) grouped by day.
 
     Returns one `ScheduleTodayResponse` per day that has at least one scheduled task.
     Days with no tasks are omitted. Items within each day are ordered by start time.
     """
-    now = datetime.now(timezone.utc)
-    monday = now - timedelta(days=now.weekday())
-    start = monday.replace(hour=0, minute=0, second=0, microsecond=0)
-    end = start + timedelta(days=7)
+    tz_name = user.preferences.get("timezone", "UTC")
+    try:
+        user_tz = ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "invalid_timezone", "message": f"Unsupported timezone: {tz_name}"},
+        ) from exc
+
+    if start_date:
+        try:
+            local_start = datetime.fromisoformat(f"{start_date}T00:00:00").replace(tzinfo=user_tz)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={"code": "invalid_date", "message": "start_date must be YYYY-MM-DD"},
+            ) from exc
+    else:
+        now_local = datetime.now(user_tz)
+        local_start = (now_local - timedelta(days=now_local.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+
+    if end_date:
+        try:
+            local_end = datetime.fromisoformat(f"{end_date}T00:00:00").replace(tzinfo=user_tz)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={"code": "invalid_date", "message": "end_date must be YYYY-MM-DD"},
+            ) from exc
+    else:
+        local_end = local_start + timedelta(days=7)
+
+    if local_end <= local_start:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "invalid_range", "message": "end_date must be after start_date"},
+        )
+
+    start = local_start.astimezone(timezone.utc)
+    end = local_end.astimezone(timezone.utc)
 
     rows = await db.execute(
         select(Task)
@@ -124,11 +238,55 @@ async def schedule_week(
 
     by_date: dict[str, list[ScheduleItem]] = defaultdict(list)
     for t in tasks:
-        day = t.scheduled_at.date().isoformat()  # type: ignore[union-attr]
+        day = t.scheduled_at.astimezone(user_tz).date().isoformat()  # type: ignore[union-attr]
         by_date[day].append(ScheduleItem(type="task", task=TaskResponse.model_validate(t)))
 
+    try:
+        events = await gcal.get_schedule_events(user, start, end)
+    except GCalAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "google_auth_required", "message": str(exc)},
+        ) from exc
+
+    for event in events:
+        day = event.start.astimezone(user_tz).date().isoformat()
+        by_date[day].append(
+            ScheduleItem(
+                type="event",
+                gcal_event={
+                    "event_id": event.event_id,
+                    "provider": "google",
+                    "account_id": event.account_id,
+                    "calendar_id": event.calendar_id,
+                    "calendar_name": event.calendar_name,
+                    "summary": event.summary,
+                    "description": event.description,
+                    "location": event.location,
+                    "start": event.start,
+                    "end": event.end,
+                    "timezone": event.timezone,
+                    "is_all_day": event.is_all_day,
+                    "is_recurring_instance": event.is_recurring_instance,
+                    "recurring_event_id": event.recurring_event_id,
+                    "html_link": event.html_link,
+                    "can_edit": event.can_edit,
+                    "etag": event.etag,
+                },
+            )
+        )
+
     return [
-        ScheduleTodayResponse(date=day, items=items)
+        ScheduleTodayResponse(
+            date=day,
+            items=sorted(
+                items,
+                key=lambda item: (
+                    item.task.scheduled_at if item.task else item.gcal_event.start,  # type: ignore[union-attr]
+                    item.type,
+                ),
+            ),
+        )
         for day, items in sorted(by_date.items())
     ]
 

@@ -15,8 +15,9 @@ All dates are ISO 8601 UTC.
 4. [Tags](#tags)
 5. [Views](#views)
 6. [Schedule](#schedule)
-7. [Blackout Days](#blackout-days)
-8. [Health](#health)
+7. [Calendar](#calendar)
+8. [Blackout Days](#blackout-days)
+9. [Health](#health)
 
 ---
 
@@ -271,7 +272,11 @@ Returns a summary of what changed.
 ```
 
 ### `GET /schedule/today`
-Today's schedule: merged tasks + GCal events, ordered by time.
+Today's schedule in user timezone, merged tasks + Google events across all linked
+accounts and selected calendars, ordered by time.
+
+Optional query params:
+- `day` — `YYYY-MM-DD` in user timezone. Defaults to today.
 
 **Response 200:**
 ```json
@@ -291,8 +296,31 @@ Today's schedule: merged tasks + GCal events, ordered by time.
 }
 ```
 
+`gcal_event` includes:
+- `event_id`
+- `provider` (`google`)
+- `account_id`
+- `calendar_id`
+- `calendar_name`
+- `summary`
+- `description`
+- `location`
+- `start`
+- `end`
+- `timezone`
+- `is_all_day`
+- `is_recurring_instance`
+- `recurring_event_id` (optional)
+- `html_link`
+- `can_edit`
+- `etag`
+
 ### `GET /schedule/week`
-Same as today but for the current week (Mon-Sun).
+Same item contract as `GET /schedule/today`, grouped by day.
+
+Optional query params:
+- `start_date` — `YYYY-MM-DD` in user timezone. Defaults to current week's Monday.
+- `end_date` — `YYYY-MM-DD` exclusive in user timezone. Defaults to `start_date + 7 days`.
 
 ### `GET /schedule/free-slots`
 Return available time slots within a date range.
@@ -313,6 +341,52 @@ Return available time slots within a date range.
 ```
 
 ---
+
+## Calendar
+
+### `GET /calendar/accounts`
+List linked Google accounts and discovered calendars.
+
+Returns writable/read-only flags per calendar:
+- `access_role` — Google role (`owner`, `writer`, `reader`, ...)
+- `can_edit` — derived boolean used by frontend
+
+### `GET /calendar/events/:event_id?account_id=...&calendar_id=...`
+Fetch event detail for edit prefill.
+
+### `PATCH /calendar/events/:event_id`
+Update a Google event.
+
+Request body:
+```json
+{
+  "account_id": "acct_123",
+  "calendar_id": "primary",
+  "etag": "\"3356021301328000\"",
+  "mode": "single",
+  "summary": "Updated title",
+  "description": "Updated notes",
+  "location": "Room 2",
+  "start": "2026-04-01T09:30:00Z",
+  "end": "2026-04-01T10:30:00Z",
+  "timezone": "Australia/Melbourne"
+}
+```
+
+`mode` values:
+- `single` — update only the selected instance/event
+- `series` — for recurring instances, updates the parent recurring event
+
+Error codes:
+- `google_auth_required` (401)
+- `calendar_read_scope_missing` (403)
+- `calendar_write_scope_missing` (403)
+- `calendar_ownership_mismatch` (403)
+- `calendar_read_only` (403)
+- `calendar_event_not_found` (404)
+- `calendar_event_etag_mismatch` (409)
+- `invalid_timezone` (422)
+- `invalid_date_range` (422)
 
 ## Blackout Days
 

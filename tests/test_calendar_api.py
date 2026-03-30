@@ -1,0 +1,185 @@
+from datetime import datetime, timezone
+
+import pytest
+from httpx import AsyncClient
+
+
+def utc(year, month, day, hour=0, minute=0):
+    return datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_calendar_accounts_requires_auth(unauthed_client: AsyncClient) -> None:
+    response = await unauthed_client.get("/calendar/accounts")
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_calendar_accounts_multiple_calendars(auth_client: AsyncClient, mock_gcal) -> None:
+    mock_gcal.seed_calendar(
+        account_id="acct_one",
+        account_email="sam+one@test.com",
+        calendar_id="work",
+        calendar_name="Work",
+        access_role="writer",
+    )
+    mock_gcal.seed_calendar(
+        account_id="acct_one",
+        account_email="sam+one@test.com",
+        calendar_id="readonly",
+        calendar_name="ReadOnly",
+        access_role="reader",
+    )
+    mock_gcal.seed_calendar(
+        account_id="acct_two",
+        account_email="sam+two@test.com",
+        calendar_id="personal",
+        calendar_name="Personal",
+        access_role="owner",
+    )
+
+    response = await auth_client.get("/calendar/accounts")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 2
+
+    first = next(account for account in data if account["account_id"] == "acct_one")
+    assert len(first["calendars"]) == 2
+    readonly = next(c for c in first["calendars"] if c["calendar_id"] == "readonly")
+    assert readonly["can_edit"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_calendar_event_detail(auth_client: AsyncClient, mock_gcal) -> None:
+    mock_gcal.seed_calendar(
+        account_id="acct_one",
+        account_email="sam+one@test.com",
+        calendar_id="work",
+        calendar_name="Work",
+        access_role="writer",
+    )
+    event_id = await mock_gcal.create_event(
+        user=None,
+        summary="Planning",
+        start=utc(2026, 4, 1, 9, 0),
+        end=utc(2026, 4, 1, 10, 0),
+        account_id="acct_one",
+        calendar_id="work",
+        calendar_name="Work",
+        description="Sprint planning",
+    )
+
+    response = await auth_client.get(
+        f"/calendar/events/{event_id}",
+        params={"account_id": "acct_one", "calendar_id": "work"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["event_id"] == event_id
+    assert payload["summary"] == "Planning"
+
+
+@pytest.mark.asyncio
+async def test_patch_calendar_event_success(auth_client: AsyncClient, mock_gcal) -> None:
+    mock_gcal.seed_calendar(
+        account_id="acct_one",
+        account_email="sam+one@test.com",
+        calendar_id="work",
+        calendar_name="Work",
+        access_role="writer",
+    )
+    event_id = await mock_gcal.create_event(
+        user=None,
+        summary="Planning",
+        start=utc(2026, 4, 1, 9, 0),
+        end=utc(2026, 4, 1, 10, 0),
+        account_id="acct_one",
+        calendar_id="work",
+        calendar_name="Work",
+        etag="v1",
+    )
+
+    response = await auth_client.patch(
+        f"/calendar/events/{event_id}",
+        json={
+            "account_id": "acct_one",
+            "calendar_id": "work",
+            "etag": "v1",
+            "summary": "Planning updated",
+            "description": "Now with agenda",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"] == "Planning updated"
+    assert payload["description"] == "Now with agenda"
+    assert payload["etag"] != "v1"
+
+
+@pytest.mark.asyncio
+async def test_patch_calendar_event_etag_conflict(auth_client: AsyncClient, mock_gcal) -> None:
+    mock_gcal.seed_calendar(
+        account_id="acct_one",
+        account_email="sam+one@test.com",
+        calendar_id="work",
+        calendar_name="Work",
+        access_role="writer",
+    )
+    event_id = await mock_gcal.create_event(
+        user=None,
+        summary="Planning",
+        start=utc(2026, 4, 1, 9, 0),
+        end=utc(2026, 4, 1, 10, 0),
+        account_id="acct_one",
+        calendar_id="work",
+        calendar_name="Work",
+        etag="v1",
+    )
+
+    response = await auth_client.patch(
+        f"/calendar/events/{event_id}",
+        json={
+            "account_id": "acct_one",
+            "calendar_id": "work",
+            "etag": "v0",
+            "summary": "Planning updated",
+        },
+    )
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "calendar_event_etag_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_patch_calendar_event_read_only_returns_403(auth_client: AsyncClient, mock_gcal) -> None:
+    mock_gcal.seed_calendar(
+        account_id="acct_one",
+        account_email="sam+one@test.com",
+        calendar_id="readonly",
+        calendar_name="ReadOnly",
+        access_role="reader",
+    )
+    event_id = await mock_gcal.create_event(
+        user=None,
+        summary="Planning",
+        start=utc(2026, 4, 1, 9, 0),
+        end=utc(2026, 4, 1, 10, 0),
+        account_id="acct_one",
+        calendar_id="readonly",
+        calendar_name="ReadOnly",
+    )
+
+    # mock marks event-level editability false for read-only calendar
+    mock_gcal.events[event_id]["can_edit"] = False
+
+    response = await auth_client.patch(
+        f"/calendar/events/{event_id}",
+        json={
+            "account_id": "acct_one",
+            "calendar_id": "readonly",
+            "summary": "Planning updated",
+        },
+    )
+    assert response.status_code == 403
+    detail = response.json()["detail"]
+    assert detail["code"] == "calendar_read_only"

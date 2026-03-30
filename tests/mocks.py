@@ -1,7 +1,9 @@
 """Test mocks — MockGCalService and other shared test doubles."""
 
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from kairos.services.gcal_service import BusySlot
 
@@ -12,6 +14,32 @@ class MockGCalService:
 
     events: dict[str, dict] = field(default_factory=dict)
     busy_slots: list[BusySlot] = field(default_factory=list)
+    account_calendars: dict[str, list[dict]] = field(default_factory=lambda: defaultdict(list))
+
+    def seed_calendar(
+        self,
+        *,
+        account_id: str,
+        account_email: str,
+        calendar_id: str,
+        calendar_name: str,
+        access_role: str = "writer",
+        selected: bool = True,
+        timezone: str | None = "UTC",
+        is_primary: bool = False,
+    ) -> None:
+        self.account_calendars[account_id].append(
+            {
+                "account_id": account_id,
+                "account_email": account_email,
+                "calendar_id": calendar_id,
+                "calendar_name": calendar_name,
+                "access_role": access_role,
+                "selected": selected,
+                "timezone": timezone,
+                "is_primary": is_primary,
+            }
+        )
 
     async def get_free_busy(self, user, time_min, time_max, **kwargs) -> list[BusySlot]:
         return [
@@ -21,7 +49,24 @@ class MockGCalService:
 
     async def create_event(self, user, summary, start, end, **kwargs) -> str:
         event_id = f"mock_evt_{len(self.events)}"
-        self.events[event_id] = {"summary": summary, "start": start, "end": end}
+        account_id = kwargs.get("account_id", "acct_primary")
+        calendar_id = kwargs.get("calendar_id", "primary")
+        self.events[event_id] = {
+            "summary": summary,
+            "start": start,
+            "end": end,
+            "description": kwargs.get("description"),
+            "location": kwargs.get("location"),
+            "account_id": account_id,
+            "calendar_id": calendar_id,
+            "calendar_name": kwargs.get("calendar_name", "Primary"),
+            "etag": kwargs.get("etag", f"etag-{event_id}"),
+            "is_all_day": kwargs.get("is_all_day", False),
+            "is_recurring_instance": kwargs.get("is_recurring_instance", False),
+            "recurring_event_id": kwargs.get("recurring_event_id"),
+            "timezone": kwargs.get("timezone", "UTC"),
+            "html_link": kwargs.get("html_link", f"https://calendar.google.com/event?eid={event_id}"),
+        }
         return event_id
 
     async def update_event(self, user, event_id, **kwargs) -> None:
@@ -39,6 +84,116 @@ class MockGCalService:
             for eid, e in self.events.items()
             if e["end"] > time_min and e["start"] < time_max
         ]
+
+    async def list_connected_calendars(self, user):
+        info = []
+        for account_id, calendars in self.account_calendars.items():
+            for cal in calendars:
+                info.append(
+                    type(
+                        "CalendarInfo",
+                        (),
+                        {
+                            "account_id": account_id,
+                            "account_email": cal["account_email"],
+                            "calendar_id": cal["calendar_id"],
+                            "calendar_name": cal["calendar_name"],
+                            "timezone": cal["timezone"],
+                            "access_role": cal["access_role"],
+                            "selected": cal["selected"],
+                            "is_primary": cal["is_primary"],
+                        },
+                    )
+                )
+        return info
+
+    async def get_schedule_events(self, user, time_min, time_max):
+        events = []
+        for event_id, event in self.events.items():
+            if event["end"] <= time_min or event["start"] >= time_max:
+                continue
+            events.append(
+                type(
+                    "ScheduleEvent",
+                    (),
+                    {
+                        "event_id": event_id,
+                        "provider": "google",
+                        "account_id": event["account_id"],
+                        "calendar_id": event["calendar_id"],
+                        "calendar_name": event["calendar_name"],
+                        "summary": event["summary"],
+                        "description": event.get("description"),
+                        "location": event.get("location"),
+                        "start": event["start"],
+                        "end": event["end"],
+                        "timezone": event.get("timezone"),
+                        "is_all_day": event.get("is_all_day", False),
+                        "is_recurring_instance": event.get("is_recurring_instance", False),
+                        "recurring_event_id": event.get("recurring_event_id"),
+                        "html_link": event.get("html_link"),
+                        "can_edit": event.get("can_edit", True),
+                        "etag": event.get("etag"),
+                    },
+                )
+            )
+        return sorted(events, key=lambda item: item.start)
+
+    async def get_event_detail(self, user, event_id, account_id, calendar_id):
+        event = self.events.get(event_id)
+        if not event or event["account_id"] != account_id or event["calendar_id"] != calendar_id:
+            from kairos.services.gcal_service import GCalNotFoundError
+
+            raise GCalNotFoundError("calendar_event_not_found")
+        details = await self.get_schedule_events(
+            user,
+            datetime.min.replace(tzinfo=ZoneInfo("UTC")),
+            datetime.max.replace(tzinfo=ZoneInfo("UTC")),
+        )
+        for detail in details:
+            if detail.event_id == event_id:
+                return detail
+        from kairos.services.gcal_service import GCalNotFoundError
+
+        raise GCalNotFoundError("calendar_event_not_found")
+
+    async def patch_event(
+        self,
+        user,
+        event_id,
+        account_id,
+        calendar_id,
+        **kwargs,
+    ):
+        from kairos.services.gcal_service import GCalConflictError, GCalNotFoundError, GCalPermissionError
+
+        event = self.events.get(event_id)
+        if not event:
+            raise GCalNotFoundError("calendar_event_not_found")
+        if event["account_id"] != account_id or event["calendar_id"] != calendar_id:
+            raise GCalPermissionError("calendar_ownership_mismatch", "not owner")
+        if event.get("can_edit") is False:
+            raise GCalPermissionError("calendar_read_only", "calendar is read-only")
+        provided_etag = kwargs.get("etag")
+        if provided_etag and provided_etag != event.get("etag"):
+            raise GCalConflictError("calendar_event_etag_mismatch")
+
+        for field in ("summary", "description", "location", "start", "end"):
+            if kwargs.get(field) is not None:
+                event[field] = kwargs[field]
+        if kwargs.get("timezone_name") is not None:
+            event["timezone"] = kwargs["timezone_name"]
+        event["etag"] = f"etag-{event_id}-updated"
+
+        details = await self.get_schedule_events(
+            user,
+            datetime.min.replace(tzinfo=ZoneInfo("UTC")),
+            datetime.max.replace(tzinfo=ZoneInfo("UTC")),
+        )
+        for detail in details:
+            if detail.event_id == event_id:
+                return detail
+        raise GCalNotFoundError("calendar_event_not_found")
 
     def add_busy_slot(self, start: datetime, end: datetime) -> None:
         """Test helper — simulate an existing calendar event as a busy block."""

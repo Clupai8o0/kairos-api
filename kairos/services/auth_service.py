@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from kairos.core.config import settings
+from kairos.models.google_account import GoogleAccount
 from kairos.models.user import User
 
 ALGORITHM = "HS256"
@@ -39,10 +40,18 @@ async def get_or_create_user(
     access_token: str,
     refresh_token: str | None,
     token_expiry: datetime | None,
+    existing_user_id: str | None = None,
 ) -> User:
     """Find user by google_id or email, or create a new one. Update Google tokens."""
-    result = await db.execute(select(User).where(User.google_id == google_id))
-    user = result.scalar_one_or_none()
+    user: User | None = None
+
+    if existing_user_id:
+        result = await db.execute(select(User).where(User.id == existing_user_id))
+        user = result.scalar_one_or_none()
+
+    if user is None:
+        result = await db.execute(select(User).where(User.google_id == google_id))
+        user = result.scalar_one_or_none()
 
     if user is None:
         # Check by email as fallback (user may have been pre-created)
@@ -81,6 +90,58 @@ async def get_or_create_user(
 
     await db.flush()
     return user
+
+
+async def upsert_google_account(
+    db: AsyncSession,
+    *,
+    user: User,
+    google_account_id: str,
+    email: str,
+    display_name: str | None,
+    access_token: str,
+    refresh_token: str | None,
+    token_expiry: datetime | None,
+    scopes: list[str] | None,
+) -> GoogleAccount:
+    """Create or update a linked Google account for the user."""
+    result = await db.execute(
+        select(GoogleAccount).where(
+            GoogleAccount.user_id == user.id,
+            GoogleAccount.google_account_id == google_account_id,
+        )
+    )
+    account = result.scalar_one_or_none()
+
+    if account is None:
+        existing = await db.execute(
+            select(GoogleAccount).where(GoogleAccount.user_id == user.id)
+        )
+        has_existing = existing.scalar_one_or_none() is not None
+        account = GoogleAccount(
+            user_id=user.id,
+            google_account_id=google_account_id,
+            email=email,
+            display_name=display_name,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            token_expiry=token_expiry,
+            scopes=scopes or [],
+            is_primary=not has_existing,
+        )
+        db.add(account)
+    else:
+        account.email = email
+        if display_name:
+            account.display_name = display_name
+        account.access_token = access_token
+        if refresh_token:
+            account.refresh_token = refresh_token
+        account.token_expiry = token_expiry
+        account.scopes = scopes or account.scopes
+
+    await db.flush()
+    return account
 
 
 async def get_user_by_id(db: AsyncSession, user_id: str) -> User | None:

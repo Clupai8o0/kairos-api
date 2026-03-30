@@ -77,6 +77,13 @@ _OPENAPI_TAGS = [
         ),
     },
     {
+        "name": "calendar",
+        "description": (
+            "Connected Google accounts and calendar event APIs. "
+            "Supports event detail fetch and in-app updates with optimistic concurrency."
+        ),
+    },
+    {
         "name": "blackout-days",
         "description": (
             "Mark entire days as unavailable. The scheduler skips blackout days "

@@ -187,6 +187,51 @@ async def test_schedule_today_returns_todays_tasks(
     assert item["task"]["gcal_event_id"] == "fake_gcal_id"
 
 
+@pytest.mark.asyncio
+async def test_schedule_today_includes_google_event_contract(
+    auth_client: AsyncClient,
+    mock_gcal,
+) -> None:
+    mock_gcal.seed_calendar(
+        account_id="acct_one",
+        account_email="sam+one@test.com",
+        calendar_id="primary",
+        calendar_name="Primary",
+        access_role="writer",
+    )
+    now = datetime.now(timezone.utc)
+    await mock_gcal.create_event(
+        user=None,
+        summary="Team sync",
+        start=now.replace(hour=9, minute=0, second=0, microsecond=0),
+        end=now.replace(hour=9, minute=30, second=0, microsecond=0),
+        account_id="acct_one",
+        calendar_id="primary",
+        calendar_name="Primary",
+        description="Daily",
+        location="Room 1",
+        is_recurring_instance=True,
+        recurring_event_id="recurring_1",
+    )
+
+    response = await auth_client.get("/schedule/today")
+    assert response.status_code == 200
+    items = response.json()["items"]
+    event_item = next(item for item in items if item["type"] == "event")
+    payload = event_item["gcal_event"]
+    assert payload["provider"] == "google"
+    assert payload["account_id"] == "acct_one"
+    assert payload["calendar_id"] == "primary"
+    assert payload["calendar_name"] == "Primary"
+    assert payload["summary"] == "Team sync"
+    assert payload["description"] == "Daily"
+    assert payload["location"] == "Room 1"
+    assert payload["is_recurring_instance"] is True
+    assert payload["recurring_event_id"] == "recurring_1"
+    assert payload["can_edit"] is True
+    assert payload["etag"]
+
+
 # ── GET /schedule/week ────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -200,6 +245,58 @@ async def test_schedule_week_empty_when_no_tasks(auth_client: AsyncClient) -> No
     response = await auth_client.get("/schedule/week")
     assert response.status_code == 200
     assert response.json() == []  # No days with tasks → empty list
+
+
+@pytest.mark.asyncio
+async def test_schedule_week_merges_multiple_accounts(
+    auth_client: AsyncClient,
+    mock_gcal,
+) -> None:
+    mock_gcal.seed_calendar(
+        account_id="acct_one",
+        account_email="sam+one@test.com",
+        calendar_id="cal_work",
+        calendar_name="Work",
+        access_role="writer",
+    )
+    mock_gcal.seed_calendar(
+        account_id="acct_two",
+        account_email="sam+two@test.com",
+        calendar_id="cal_personal",
+        calendar_name="Personal",
+        access_role="writer",
+    )
+
+    monday = datetime.now(timezone.utc).replace(hour=8, minute=0, second=0, microsecond=0)
+    await mock_gcal.create_event(
+        user=None,
+        summary="Work block",
+        start=monday,
+        end=monday.replace(hour=9),
+        account_id="acct_one",
+        calendar_id="cal_work",
+        calendar_name="Work",
+    )
+    await mock_gcal.create_event(
+        user=None,
+        summary="Gym",
+        start=monday.replace(hour=18),
+        end=monday.replace(hour=19),
+        account_id="acct_two",
+        calendar_id="cal_personal",
+        calendar_name="Personal",
+    )
+
+    response = await auth_client.get("/schedule/week")
+    assert response.status_code == 200
+    events = [
+        item["gcal_event"]["summary"]
+        for day in response.json()
+        for item in day["items"]
+        if item["type"] == "event"
+    ]
+    assert "Work block" in events
+    assert "Gym" in events
 
 
 # ── GET /schedule/free-slots ─────────────────────────────────────────────────

@@ -6,6 +6,8 @@ from kairos.models.tag import Tag, task_tags, project_tags
 from kairos.models.view import View
 from kairos.models.blackout_day import BlackoutDay
 from kairos.models.schedule_log import ScheduleLog
+from kairos.models.google_account import GoogleAccount
+from kairos.models.google_calendar import GoogleCalendar
 
 __all__ = [
     "Base",
@@ -20,4 +22,6 @@ __all__ = [
     "View",
     "BlackoutDay",
     "ScheduleLog",
+    "GoogleAccount",
+    "GoogleCalendar",
 ]

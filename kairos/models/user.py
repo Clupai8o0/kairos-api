@@ -33,3 +33,7 @@ class User(Base):
     # Relationships
     tasks: Mapped[list["Task"]] = relationship(back_populates="user")  # noqa: F821
     projects: Mapped[list["Project"]] = relationship(back_populates="user")  # noqa: F821
+    google_accounts: Mapped[list["GoogleAccount"]] = relationship(  # noqa: F821
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )

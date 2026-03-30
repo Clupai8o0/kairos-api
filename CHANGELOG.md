@@ -31,7 +31,7 @@
 - [x] Schedule API endpoints (POST /schedule/run, GET /schedule/today, GET /schedule/week, GET /schedule/free-slots)
 - [x] Schedule-on-write (auto-schedule on task create/update)
 - [x] Blackout days (fully wired — service + routes + 11 tests)
-- [x] Tests passing (175 tests)
+- [x] Tests passing (187 tests)
 - [x] OpenAPI docs reviewed
 
 **Known issues:**
@@ -75,6 +75,54 @@ TEMPLATE — Copy this block for each session:
 - Issue description
 
 -->
+
+### Session 2026-03-30 — Multi-account Google event coverage + calendar edit APIs
+
+**What was done:**
+- Added linked Google account/calendar data models:
+  - `google_accounts` (per-user linked OAuth accounts + scopes/tokens)
+  - `google_calendars` (per-account calendars + access role + selected flag)
+- Extended OAuth callback to support linking additional Google accounts to an already
+  authenticated Kairos user and persist granted scopes.
+- Expanded `GCalService` with:
+  - multi-account calendar discovery and short-lived calendar list caching
+  - merged event reads across selected calendars/accounts (`get_schedule_events`)
+  - event detail fetch + event patch with etag conflict checks
+  - ownership checks (account/calendar must belong to current user)
+  - retry/backoff for transient Google API failures (`429/500/503` + network)
+  - machine-readable permission/scope/conflict/not-found error paths
+- Updated schedule endpoints:
+  - `GET /schedule/today` and `GET /schedule/week` now merge task items with Google event items
+  - event payload includes provider/account/calendar metadata, recurrence flags, html link,
+    editability, and etag
+  - timezone-aware boundaries with optional range params (`day`, `start_date`, `end_date`)
+- Added new calendar endpoints:
+  - `GET /calendar/accounts`
+  - `GET /calendar/events/{event_id}`
+  - `PATCH /calendar/events/{event_id}`
+- Added migration `c2b9a4f1c8d7_add_google_accounts_and_calendars.py`.
+- Updated docs:
+  - `references/api-contract.md`
+  - `references/gcal-integration.md`
+  - `README.md`
+
+**What changed:**
+- Schedule API now returns Google event items in `today/week` responses, not task-only data.
+- OAuth callback now attaches newly consented Google accounts to the current logged-in user
+  when an auth cookie is present.
+
+**Decisions made:**
+- Keep task scheduling behavior unchanged; scheduler still uses primary account behavior for
+  schedule-on-write while read/edit APIs aggregate across all linked calendars.
+- Use optimistic concurrency for event edits via etag mismatch detection (`409`).
+
+**What's next:**
+- Add explicit account-connect/disconnect management endpoints and calendar selection toggles.
+- Add staging verification against real Google accounts with mixed scope grants.
+
+**Issues/blockers discovered:**
+- Existing migration test assumed the latest migration was always initial schema; updated test to
+  target the actual initial migration file so new revisions do not fail CI.
 
 ### Session 2026-03-30 — OAuth PKCE state/verifier fix
 

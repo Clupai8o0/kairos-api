@@ -15,8 +15,11 @@ from kairos.models.user import User
 from kairos.schemas.auth import ApiKeyResponse, UserResponse
 from kairos.services.auth_service import (
     create_access_token,
+    decode_access_token,
     generate_api_key,
     get_or_create_user,
+    get_user_by_id,
+    upsert_google_account,
 )
 
 _COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
@@ -102,6 +105,7 @@ async def google_login() -> RedirectResponse:
 async def google_callback(
     code: str,
     state: str,
+    access_token: str | None = Cookie(default=None),
     oauth_state: str | None = Cookie(default=None, alias=_OAUTH_STATE_COOKIE),
     oauth_code_verifier: str | None = Cookie(default=None, alias=_OAUTH_VERIFIER_COOKIE),
     db: AsyncSession = Depends(get_db),
@@ -162,6 +166,16 @@ async def google_callback(
         if credentials.expiry
         else None
     )
+    raw_scopes = getattr(credentials, "scopes", None)
+    scope_list = list(raw_scopes) if isinstance(raw_scopes, (list, tuple, set)) else []
+
+    existing_user_id: str | None = None
+    if access_token:
+        existing_user_id = decode_access_token(access_token)
+        if existing_user_id:
+            existing_user = await get_user_by_id(db, existing_user_id)
+            if existing_user is None:
+                existing_user_id = None
 
     user = await get_or_create_user(
         db,
@@ -171,6 +185,19 @@ async def google_callback(
         access_token=credentials.token,
         refresh_token=credentials.refresh_token,
         token_expiry=token_expiry,
+        existing_user_id=existing_user_id,
+    )
+
+    await upsert_google_account(
+        db,
+        user=user,
+        google_account_id=id_info["sub"],
+        email=id_info["email"],
+        display_name=id_info.get("name"),
+        access_token=credentials.token,
+        refresh_token=credentials.refresh_token,
+        token_expiry=token_expiry,
+        scopes=scope_list,
     )
 
     jwt_token = create_access_token(user.id)
