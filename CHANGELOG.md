@@ -31,7 +31,7 @@
 - [x] Schedule API endpoints (POST /schedule/run, GET /schedule/today, GET /schedule/week, GET /schedule/free-slots)
 - [x] Schedule-on-write (auto-schedule on task create/update)
 - [x] Blackout days (fully wired — service + routes + 11 tests)
-- [x] Tests passing (187 tests)
+- [x] Tests passing (196 tests)
 - [x] OpenAPI docs reviewed
 
 **Known issues:**
@@ -75,6 +75,82 @@ TEMPLATE — Copy this block for each session:
 - Issue description
 
 -->
+
+### Session 2026-03-30 — All-day Google event handling parity
+
+**What was done:**
+- Updated GCal event parsing to treat date-only payloads as all-day events in the legacy
+  `get_events` path (no longer dropped).
+- Added shared parsing helper to normalize both timed and all-day Google event windows.
+- Updated calendar event patch logic to preserve Google semantics:
+  - all-day events patch using `start.date` / `end.date`
+  - timed events patch using `start.dateTime` / `end.dateTime`
+- Added regression tests in `tests/test_gcal_all_day_support.py` for date/dateTime parsing
+  and outbound patch field shape.
+
+**What changed:**
+- Backend now consistently accommodates all-day events across schedule mapping and direct
+  event listing/update pathways.
+
+**Decisions made:**
+- Keep all-day `end` handling exclusive, matching Google Calendar API behavior.
+
+**What's next:**
+- Add integration test coverage for editing existing all-day events through the calendar API.
+
+**Issues/blockers discovered:**
+- None
+
+### Session 2026-03-30 — Persisted calendar visibility preferences
+
+**What was done:**
+- Added persisted per-user calendar visibility selection support via
+  `PATCH /calendar/accounts/selection`.
+- Added request/response schemas for bulk selection updates and refreshed account payload.
+- Updated `GCalService._sync_calendars_for_account` to preserve user `selected` choices for
+  existing calendars (provider sync no longer overwrites preferences).
+- Added `GCalService.update_calendar_selections` with idempotent behavior and validation for
+  unknown account/calendar pairs.
+- Updated test mocks and added API tests for:
+  - persisted selection after re-fetch
+  - idempotent updates (`updated=0` when unchanged)
+  - unknown pair validation (`422 unknown_calendar_selection`)
+
+**What changed:**
+- `GET /calendar/accounts` now consistently reflects persisted `selected` values.
+
+**Decisions made:**
+- Persist selection state in `google_calendars.selected` as the single source of truth for
+  schedule filtering visibility.
+
+**What's next:**
+- Optionally expose per-calendar ordering/grouping metadata for frontend preferences.
+
+**Issues/blockers discovered:**
+- None
+
+### Session 2026-03-30 — Fix schedule/week 500 from Google credential expiry timezone mismatch
+
+**What was done:**
+- Fixed `TypeError: can't compare offset-naive and offset-aware datetimes` in
+  `GCalService._get_valid_credentials` path used by `GET /schedule/week`.
+- Added `GCalService._normalize_google_expiry` and now normalize persisted token expiry
+  datetimes to naive UTC before constructing `google.oauth2.credentials.Credentials`.
+- Added regression tests in `tests/test_gcal_expiry_normalization.py` covering both
+  user-level and linked-account token expiry normalization.
+
+**What changed:**
+- No API contract changes; runtime stability fix only.
+
+**Decisions made:**
+- Keep DB token expiry timezone-aware for storage, but convert to naive UTC at Google
+  credentials boundary to match the library's expectation.
+
+**What's next:**
+- Re-run live OAuth + schedule/week browser flow to confirm no further runtime exceptions.
+
+**Issues/blockers discovered:**
+- None
 
 ### Session 2026-03-30 — Multi-account Google event coverage + calendar edit APIs
 

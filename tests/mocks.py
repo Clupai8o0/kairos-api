@@ -107,6 +107,28 @@ class MockGCalService:
                 )
         return info
 
+    async def update_calendar_selections(self, user, selections):
+        updated = 0
+        for selection in selections:
+            account_id = selection["account_id"]
+            calendar_id = selection["calendar_id"]
+            target = None
+            for cal in self.account_calendars.get(account_id, []):
+                if cal["calendar_id"] == calendar_id:
+                    target = cal
+                    break
+            if target is None:
+                from kairos.services.gcal_service import GCalValidationError
+
+                raise GCalValidationError(
+                    "unknown_calendar_selection",
+                    f"Unknown account/calendar pair: {account_id}/{calendar_id}",
+                )
+            if bool(target["selected"]) != bool(selection["selected"]):
+                target["selected"] = bool(selection["selected"])
+                updated += 1
+        return updated
+
     async def get_schedule_events(self, user, time_min, time_max):
         events = []
         for event_id, event in self.events.items():

@@ -11,6 +11,8 @@ from kairos.schemas.calendar import (
     CalendarRef,
     ConnectedAccountResponse,
     EventDetailResponse,
+    UpdateCalendarSelectionRequest,
+    UpdateCalendarSelectionResponse,
     UpdateEventRequest,
 )
 from kairos.services.gcal_service import (
@@ -19,10 +21,37 @@ from kairos.services.gcal_service import (
     GCalMissingScopeError,
     GCalNotFoundError,
     GCalPermissionError,
+    GCalValidationError,
     GCalService,
 )
 
 router = APIRouter()
+
+
+def _group_accounts(infos: list) -> list[ConnectedAccountResponse]:
+    grouped: dict[str, dict] = defaultdict(lambda: {"email": "", "calendars": []})
+    for info in infos:
+        grouped[info.account_id]["email"] = info.account_email
+        grouped[info.account_id]["calendars"].append(
+            CalendarRef(
+                calendar_id=info.calendar_id,
+                calendar_name=info.calendar_name,
+                timezone=info.timezone,
+                access_role=info.access_role,
+                can_edit=info.access_role in {"owner", "writer"},
+                selected=info.selected,
+                is_primary=info.is_primary,
+            )
+        )
+
+    return [
+        ConnectedAccountResponse(
+            account_id=account_id,
+            email=value["email"],
+            calendars=value["calendars"],
+        )
+        for account_id, value in grouped.items()
+    ]
 
 
 @router.get("/accounts", response_model=list[ConnectedAccountResponse])
@@ -52,29 +81,39 @@ async def list_connected_accounts(
             },
         ) from exc
 
-    grouped: dict[str, dict] = defaultdict(lambda: {"email": "", "calendars": []})
-    for info in infos:
-        grouped[info.account_id]["email"] = info.account_email
-        grouped[info.account_id]["calendars"].append(
-            CalendarRef(
-                calendar_id=info.calendar_id,
-                calendar_name=info.calendar_name,
-                timezone=info.timezone,
-                access_role=info.access_role,
-                can_edit=info.access_role in {"owner", "writer"},
-                selected=info.selected,
-                is_primary=info.is_primary,
-            )
-        )
+    return _group_accounts(infos)
 
-    return [
-        ConnectedAccountResponse(
-            account_id=account_id,
-            email=value["email"],
-            calendars=value["calendars"],
+
+@router.patch("/accounts/selection", response_model=UpdateCalendarSelectionResponse)
+async def update_calendar_selection(
+    payload: UpdateCalendarSelectionRequest,
+    user: User = Depends(get_current_user),
+    gcal: GCalService = Depends(get_gcal_service),
+) -> UpdateCalendarSelectionResponse:
+    """Persist per-user calendar visibility preferences for schedule filtering."""
+    try:
+        updated = await gcal.update_calendar_selections(
+            user,
+            [item.model_dump() for item in payload.selections],
         )
-        for account_id, value in grouped.items()
-    ]
+        infos = await gcal.list_connected_calendars(user)
+    except GCalValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    except GCalMissingScopeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": exc.code, "message": str(exc), "action": "reconsent_google"},
+        ) from exc
+    except GCalAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "google_auth_required", "message": str(exc), "action": "reconnect_google"},
+        ) from exc
+
+    return UpdateCalendarSelectionResponse(updated=updated, accounts=_group_accounts(infos))
 
 
 @router.get("/events/{event_id}", response_model=EventDetailResponse)
@@ -126,13 +165,13 @@ async def patch_event(
             ZoneInfo(payload.timezone)
         except ZoneInfoNotFoundError as exc:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail={"code": "invalid_timezone", "message": f"Unsupported timezone: {payload.timezone}"},
             ) from exc
 
     if payload.start and payload.end and payload.end <= payload.start:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={"code": "invalid_date_range", "message": "end must be after start"},
         )
 

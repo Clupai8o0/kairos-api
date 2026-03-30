@@ -315,6 +315,10 @@ Optional query params:
 - `can_edit`
 - `etag`
 
+All-day event semantics:
+- `is_all_day=true` when Google returns `start.date`/`end.date`
+- `end` is exclusive for all-day events (Google Calendar behavior)
+
 ### `GET /schedule/week`
 Same item contract as `GET /schedule/today`, grouped by day.
 
@@ -350,6 +354,48 @@ List linked Google accounts and discovered calendars.
 Returns writable/read-only flags per calendar:
 - `access_role` — Google role (`owner`, `writer`, `reader`, ...)
 - `can_edit` — derived boolean used by frontend
+- `selected` — persisted per-user schedule visibility preference
+
+### `PATCH /calendar/accounts/selection`
+Persist per-user calendar visibility preferences.
+
+Request body:
+```json
+{
+  "selections": [
+    {"account_id": "acct_123", "calendar_id": "primary", "selected": false}
+  ]
+}
+```
+
+Response body:
+```json
+{
+  "updated": 1,
+  "accounts": [
+    {
+      "account_id": "acct_123",
+      "email": "sam@test.com",
+      "calendars": [
+        {
+          "calendar_id": "primary",
+          "calendar_name": "Primary",
+          "timezone": "Australia/Melbourne",
+          "access_role": "owner",
+          "can_edit": true,
+          "selected": false,
+          "is_primary": true
+        }
+      ]
+    }
+  ]
+}
+```
+
+Rules:
+- Idempotent: setting the current value returns `updated: 0`
+- Unknown `account_id`/`calendar_id` pair returns `422` with `unknown_calendar_selection`
+- Preferences persist across refreshes/sessions and provider sync
 
 ### `GET /calendar/events/:event_id?account_id=...&calendar_id=...`
 Fetch event detail for edit prefill.
@@ -376,6 +422,10 @@ Request body:
 `mode` values:
 - `single` — update only the selected instance/event
 - `series` — for recurring instances, updates the parent recurring event
+
+All-day editing behavior:
+- For all-day target events, backend writes `start.date` and `end.date` values.
+- For timed events, backend writes `start.dateTime` and `end.dateTime` values.
 
 Error codes:
 - `google_auth_required` (401)

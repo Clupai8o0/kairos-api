@@ -35,6 +35,7 @@ class GCalEvent:
     end: datetime
     description: str | None = None
     kairos_task_id: str | None = None
+    is_all_day: bool = False
 
 
 @dataclass
@@ -92,6 +93,12 @@ class GCalMissingScopeError(GCalPermissionError):
     pass
 
 
+class GCalValidationError(Exception):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 class GCalService:
     """Async wrapper around Google Calendar API v3."""
 
@@ -110,6 +117,48 @@ class GCalService:
         "https://www.googleapis.com/auth/calendar.events",
     }
 
+    @staticmethod
+    def _normalize_google_expiry(expiry: datetime | None) -> datetime | None:
+        """Google creds expects naive UTC expiry for `expired` comparisons."""
+        if expiry is None:
+            return None
+        if expiry.tzinfo is None:
+            return expiry
+        return expiry.astimezone(timezone.utc).replace(tzinfo=None)
+
+    @staticmethod
+    def _parse_google_event_window(
+        start_raw: dict[str, Any],
+        end_raw: dict[str, Any],
+    ) -> tuple[datetime, datetime, bool] | None:
+        """Parse Google event start/end for timed and all-day events.
+
+        All-day events use date-only values with an exclusive end date.
+        """
+        is_all_day = "date" in start_raw and "dateTime" not in start_raw
+        try:
+            if is_all_day:
+                start = datetime.fromisoformat(f"{start_raw['date']}T00:00:00+00:00")
+                end = datetime.fromisoformat(f"{end_raw['date']}T00:00:00+00:00")
+            else:
+                start = datetime.fromisoformat(start_raw["dateTime"])
+                end = datetime.fromisoformat(end_raw["dateTime"])
+        except (KeyError, ValueError):
+            return None
+
+        return start, end, is_all_day
+
+    @staticmethod
+    def _to_google_event_time(
+        dt: datetime,
+        *,
+        is_all_day: bool,
+        timezone_name: str,
+    ) -> dict[str, str]:
+        if is_all_day:
+            return {"date": dt.date().isoformat()}
+        return {"dateTime": dt.isoformat(), "timeZone": timezone_name}
+
     # ── Credentials ────────────────────────────────────────────────────────────
 
     def _get_credentials(self, user: User, account: GoogleAccount | None = None) -> Credentials:
@@ -117,6 +166,7 @@ class GCalService:
         token = account.access_token if account else user.google_access_token
         refresh = account.refresh_token if account else user.google_refresh_token
         expiry = account.token_expiry if account else user.google_token_expiry
+        expiry = self._normalize_google_expiry(expiry)
         creds = Credentials(
             token=token,
             refresh_token=refresh,
@@ -258,7 +308,7 @@ class GCalService:
                 continue
 
             cal = existing.get(calendar_id)
-            selected = bool(item.get("selected", True))
+            provider_selected = bool(item.get("selected", True))
             if cal is None:
                 cal = GoogleCalendar(
                     account_id=account.id,
@@ -266,7 +316,7 @@ class GCalService:
                     name=item.get("summaryOverride") or item.get("summary") or calendar_id,
                     timezone=item.get("timeZone"),
                     access_role=item.get("accessRole", "reader"),
-                    selected=selected,
+                    selected=provider_selected,
                     is_primary=bool(item.get("primary", False)),
                 )
                 self._db.add(cal)
@@ -274,7 +324,7 @@ class GCalService:
                 cal.name = item.get("summaryOverride") or item.get("summary") or cal.name
                 cal.timezone = item.get("timeZone")
                 cal.access_role = item.get("accessRole", cal.access_role)
-                cal.selected = selected
+                # Preserve user visibility preference once a calendar row exists.
                 cal.is_primary = bool(item.get("primary", False))
             synced.append(cal)
 
@@ -301,6 +351,61 @@ class GCalService:
                     )
                 )
         return infos
+
+    async def update_calendar_selections(
+        self,
+        user: User,
+        selections: list[dict[str, Any]],
+    ) -> int:
+        if self._db is None:
+            raise GCalValidationError("calendar_selection_unavailable", "No DB session bound")
+
+        accounts = await self._accounts_for_user(user)
+        account_ids = {account.id for account in accounts}
+
+        # Refresh discovered calendars first so newly-connected calendars can be selected.
+        for account in accounts:
+            try:
+                self._validate_scope(account, write=False)
+                await self._sync_calendars_for_account(user, account)
+            except GCalMissingScopeError:
+                continue
+
+        rows = await self._db.execute(
+            select(GoogleCalendar, GoogleAccount)
+            .join(GoogleAccount, GoogleCalendar.account_id == GoogleAccount.id)
+            .where(GoogleAccount.user_id == user.id)
+        )
+        calendars_by_pair = {
+            (account.id, cal.google_calendar_id): cal
+            for cal, account in rows.all()
+        }
+
+        updated = 0
+        for selection in selections:
+            account_id = selection.get("account_id")
+            calendar_id = selection.get("calendar_id")
+            selected = bool(selection.get("selected"))
+
+            if account_id not in account_ids:
+                raise GCalValidationError(
+                    "unknown_calendar_selection",
+                    f"Unknown account/calendar pair: {account_id}/{calendar_id}",
+                )
+
+            cal = calendars_by_pair.get((account_id, calendar_id))
+            if cal is None:
+                raise GCalValidationError(
+                    "unknown_calendar_selection",
+                    f"Unknown account/calendar pair: {account_id}/{calendar_id}",
+                )
+
+            if cal.selected != selected:
+                cal.selected = selected
+                updated += 1
+
+        await self._db.flush()
+        return updated
 
     # ── Core operations ────────────────────────────────────────────────────────
 
@@ -496,9 +601,10 @@ class GCalService:
         for item in result.get("items", []):
             start_raw = item.get("start", {})
             end_raw = item.get("end", {})
-            # Skip all-day events (no dateTime)
-            if "dateTime" not in start_raw:
+            parsed = self._parse_google_event_window(start_raw, end_raw)
+            if parsed is None:
                 continue
+            start, end, is_all_day = parsed
             private = (
                 item.get("extendedProperties", {}).get("private", {})
             )
@@ -506,10 +612,11 @@ class GCalService:
                 GCalEvent(
                     id=item["id"],
                     summary=item.get("summary", ""),
-                    start=datetime.fromisoformat(start_raw["dateTime"]),
-                    end=datetime.fromisoformat(end_raw["dateTime"]),
+                    start=start,
+                    end=end,
                     description=item.get("description"),
                     kairos_task_id=private.get("kairos_task_id"),
+                    is_all_day=is_all_day,
                 )
             )
         return events
@@ -591,16 +698,10 @@ class GCalService:
         start_raw = item.get("start", {})
         end_raw = item.get("end", {})
 
-        is_all_day = "date" in start_raw and "dateTime" not in start_raw
-        try:
-            if is_all_day:
-                start = datetime.fromisoformat(f"{start_raw['date']}T00:00:00+00:00")
-                end = datetime.fromisoformat(f"{end_raw['date']}T00:00:00+00:00")
-            else:
-                start = datetime.fromisoformat(start_raw["dateTime"])
-                end = datetime.fromisoformat(end_raw["dateTime"])
-        except (KeyError, ValueError):
+        parsed = self._parse_google_event_window(start_raw, end_raw)
+        if parsed is None:
             return None
+        start, end, is_all_day = parsed
 
         can_edit = self._can_edit_calendar(calendar)
         return GoogleScheduleEvent(
@@ -702,11 +803,20 @@ class GCalService:
             or calendar.timezone
             or "UTC"
         )
+        is_all_day = "date" in current.get("start", {}) and "dateTime" not in current.get("start", {})
 
         if start is not None:
-            patch_body["start"] = {"dateTime": start.isoformat(), "timeZone": active_tz}
+            patch_body["start"] = self._to_google_event_time(
+                start,
+                is_all_day=is_all_day,
+                timezone_name=active_tz,
+            )
         if end is not None:
-            patch_body["end"] = {"dateTime": end.isoformat(), "timeZone": active_tz}
+            patch_body["end"] = self._to_google_event_time(
+                end,
+                is_all_day=is_all_day,
+                timezone_name=active_tz,
+            )
 
         target_event_id = event_id
         if mode == "series" and current.get("recurringEventId"):

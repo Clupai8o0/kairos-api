@@ -183,3 +183,100 @@ async def test_patch_calendar_event_read_only_returns_403(auth_client: AsyncClie
     assert response.status_code == 403
     detail = response.json()["detail"]
     assert detail["code"] == "calendar_read_only"
+
+
+@pytest.mark.asyncio
+async def test_patch_calendar_selection_persists_and_returns_accounts(
+    auth_client: AsyncClient, mock_gcal
+) -> None:
+    mock_gcal.seed_calendar(
+        account_id="acct_one",
+        account_email="sam+one@test.com",
+        calendar_id="work",
+        calendar_name="Work",
+        access_role="writer",
+        selected=True,
+    )
+    mock_gcal.seed_calendar(
+        account_id="acct_one",
+        account_email="sam+one@test.com",
+        calendar_id="personal",
+        calendar_name="Personal",
+        access_role="writer",
+        selected=True,
+    )
+
+    response = await auth_client.patch(
+        "/calendar/accounts/selection",
+        json={
+            "selections": [
+                {"account_id": "acct_one", "calendar_id": "work", "selected": False},
+            ]
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["updated"] == 1
+
+    account = next(a for a in payload["accounts"] if a["account_id"] == "acct_one")
+    work = next(c for c in account["calendars"] if c["calendar_id"] == "work")
+    personal = next(c for c in account["calendars"] if c["calendar_id"] == "personal")
+    assert work["selected"] is False
+    assert personal["selected"] is True
+
+    # Re-fetch should return persisted value.
+    get_response = await auth_client.get("/calendar/accounts")
+    assert get_response.status_code == 200
+    account = next(a for a in get_response.json() if a["account_id"] == "acct_one")
+    work = next(c for c in account["calendars"] if c["calendar_id"] == "work")
+    assert work["selected"] is False
+
+
+@pytest.mark.asyncio
+async def test_patch_calendar_selection_idempotent(auth_client: AsyncClient, mock_gcal) -> None:
+    mock_gcal.seed_calendar(
+        account_id="acct_one",
+        account_email="sam+one@test.com",
+        calendar_id="work",
+        calendar_name="Work",
+        access_role="writer",
+        selected=False,
+    )
+
+    response = await auth_client.patch(
+        "/calendar/accounts/selection",
+        json={
+            "selections": [
+                {"account_id": "acct_one", "calendar_id": "work", "selected": False},
+            ]
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["updated"] == 0
+
+
+@pytest.mark.asyncio
+async def test_patch_calendar_selection_unknown_pair_returns_422(
+    auth_client: AsyncClient,
+    mock_gcal,
+) -> None:
+    mock_gcal.seed_calendar(
+        account_id="acct_one",
+        account_email="sam+one@test.com",
+        calendar_id="work",
+        calendar_name="Work",
+        access_role="writer",
+        selected=True,
+    )
+
+    response = await auth_client.patch(
+        "/calendar/accounts/selection",
+        json={
+            "selections": [
+                {"account_id": "acct_one", "calendar_id": "unknown", "selected": False},
+            ]
+        },
+    )
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["code"] == "unknown_calendar_selection"

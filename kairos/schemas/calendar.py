@@ -52,3 +52,18 @@ class UpdateEventRequest(BaseModel):
     start: datetime | None = None
     end: datetime | None = None
     timezone: str | None = None
+
+
+class CalendarSelectionItem(BaseModel):
+    account_id: str
+    calendar_id: str
+    selected: bool
+
+
+class UpdateCalendarSelectionRequest(BaseModel):
+    selections: list[CalendarSelectionItem]
+
+
+class UpdateCalendarSelectionResponse(BaseModel):
+    updated: int
+    accounts: list[ConnectedAccountResponse]
