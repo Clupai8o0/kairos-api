@@ -3,6 +3,7 @@
 import logging
 from collections import defaultdict
 from datetime import datetime, time, timedelta, timezone
+from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Depends, HTTPException, Query, status
@@ -51,7 +52,14 @@ async def run_schedule(
     The response includes `scheduled` (placed), `failed` (no slot found before deadline),
     `skipped` (dependencies unmet or already done), and `details`.
     """
-    result = await run_scheduler(db, gcal, user, task_ids=payload.task_ids)
+    calendar_ids = set(payload.calendar_ids) if payload.calendar_ids else None
+    result = await run_scheduler(
+        db,
+        gcal,
+        user,
+        task_ids=payload.task_ids,
+        calendar_ids=calendar_ids,
+    )
     return ScheduleRunResponse(
         scheduled=result.scheduled,
         failed=result.failed,
@@ -63,15 +71,23 @@ async def run_schedule(
 @router.get("/today", response_model=ScheduleTodayResponse)
 async def schedule_today(
     day: str | None = Query(default=None, description="YYYY-MM-DD in user timezone"),
+    task_events: Literal["exclude", "include"] = Query(
+        default="exclude",
+        description="exclude=hide task-backed calendar events, include=return them with flags",
+    ),
+    calendar_ids: str | None = Query(
+        default=None,
+        description="Comma-separated calendar IDs to include for this schedule view",
+    ),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
     gcal: GCalService = Depends(get_gcal_service),
 ) -> ScheduleTodayResponse:
     """Return all tasks scheduled for today as a `ScheduleTodayResponse`.
 
-    Each item has `type: "task"` and a full `task` object (including tags).
-    GCal-only events (non-task blocks) are not included in v1.
-    Items are ordered by scheduled start time.
+    Task and Google Calendar event items are merged in one timeline.
+    Task items remain visible for task-native editing. By default, calendar
+    events that are task-backed are excluded (`task_events=exclude`).
     """
     tz_name = user.preferences.get("timezone", "UTC")
     try:
@@ -103,6 +119,9 @@ async def schedule_today(
     start = local_start.astimezone(timezone.utc)
     end = local_end.astimezone(timezone.utc)
 
+    include_task_events = task_events == "include"
+    selected_calendar_ids = set(c.strip() for c in calendar_ids.split(",") if c.strip()) if calendar_ids else None
+
     rows = await db.execute(
         select(Task)
         .where(
@@ -122,7 +141,13 @@ async def schedule_today(
     ]
 
     try:
-        events = await gcal.get_schedule_events(user, start, end)
+        events = await gcal.get_schedule_events(
+            user,
+            start,
+            end,
+            include_task_events=include_task_events,
+            calendar_ids=selected_calendar_ids,
+        )
     except GCalAuthError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -154,6 +179,8 @@ async def schedule_today(
                     "html_link": event.html_link,
                     "can_edit": event.can_edit,
                     "etag": event.etag,
+                    "is_task_event": event.is_task_event,
+                    "task_id": event.task_id,
                 },
             )
         )
@@ -171,14 +198,22 @@ async def schedule_today(
 async def schedule_week(
     start_date: str | None = Query(default=None, description="YYYY-MM-DD in user timezone"),
     end_date: str | None = Query(default=None, description="YYYY-MM-DD exclusive in user timezone"),
+    task_events: Literal["exclude", "include"] = Query(
+        default="exclude",
+        description="exclude=hide task-backed calendar events, include=return them with flags",
+    ),
+    calendar_ids: str | None = Query(
+        default=None,
+        description="Comma-separated calendar IDs to include for this schedule view",
+    ),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
     gcal: GCalService = Depends(get_gcal_service),
 ) -> list[ScheduleTodayResponse]:
     """Return the current week's schedule (Mon–Sun) grouped by day.
 
-    Returns one `ScheduleTodayResponse` per day that has at least one scheduled task.
-    Days with no tasks are omitted. Items within each day are ordered by start time.
+    Returns one `ScheduleTodayResponse` per day that has at least one item.
+    Task items remain visible; task-backed calendar events are excluded by default.
     """
     tz_name = user.preferences.get("timezone", "UTC")
     try:
@@ -223,6 +258,9 @@ async def schedule_week(
     start = local_start.astimezone(timezone.utc)
     end = local_end.astimezone(timezone.utc)
 
+    include_task_events = task_events == "include"
+    selected_calendar_ids = set(c.strip() for c in calendar_ids.split(",") if c.strip()) if calendar_ids else None
+
     rows = await db.execute(
         select(Task)
         .where(
@@ -242,7 +280,13 @@ async def schedule_week(
         by_date[day].append(ScheduleItem(type="task", task=TaskResponse.model_validate(t)))
 
     try:
-        events = await gcal.get_schedule_events(user, start, end)
+        events = await gcal.get_schedule_events(
+            user,
+            start,
+            end,
+            include_task_events=include_task_events,
+            calendar_ids=selected_calendar_ids,
+        )
     except GCalAuthError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -272,6 +316,8 @@ async def schedule_week(
                     "html_link": event.html_link,
                     "can_edit": event.can_edit,
                     "etag": event.etag,
+                    "is_task_event": event.is_task_event,
+                    "task_id": event.task_id,
                 },
             )
         )
@@ -294,6 +340,10 @@ async def schedule_week(
 @router.get("/free-slots", response_model=list[FreeSlotResponse])
 async def free_slots(
     days: int = 7,
+    calendar_ids: str | None = Query(
+        default=None,
+        description="Comma-separated calendar IDs to include when computing busy windows",
+    ),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
     gcal: GCalService = Depends(get_gcal_service),
@@ -308,9 +358,10 @@ async def free_slots(
     """
     now = datetime.now(timezone.utc)
     horizon_end = now + timedelta(days=max(1, min(days, 30)))
+    selected_calendar_ids = set(c.strip() for c in calendar_ids.split(",") if c.strip()) if calendar_ids else None
 
     try:
-        busy = await gcal.get_free_busy(user, now, horizon_end)
+        busy = await gcal.get_free_busy(user, now, horizon_end, calendar_ids=selected_calendar_ids)
     except GCalAuthError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

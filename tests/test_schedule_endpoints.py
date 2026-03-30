@@ -1,7 +1,7 @@
 """Tests for schedule endpoints — POST /schedule/run, GET /schedule/today, etc."""
 
 from datetime import datetime, timezone
-
+from zoneinfo import ZoneInfo
 import pytest
 from httpx import AsyncClient
 
@@ -177,7 +177,8 @@ async def test_schedule_today_returns_todays_tasks(
     db_session.add(task)
     await db_session.commit()
 
-    response = await auth_client.get("/schedule/today")
+    local_day = now.astimezone(ZoneInfo("Australia/Melbourne")).date().isoformat()
+    response = await auth_client.get(f"/schedule/today?day={local_day}")
     assert response.status_code == 200
     data = response.json()
     assert len(data["items"]) == 1
@@ -214,7 +215,8 @@ async def test_schedule_today_includes_google_event_contract(
         recurring_event_id="recurring_1",
     )
 
-    response = await auth_client.get("/schedule/today")
+    local_day = now.astimezone(ZoneInfo("Australia/Melbourne")).date().isoformat()
+    response = await auth_client.get(f"/schedule/today?day={local_day}")
     assert response.status_code == 200
     items = response.json()["items"]
     event_item = next(item for item in items if item["type"] == "event")
@@ -230,6 +232,72 @@ async def test_schedule_today_includes_google_event_contract(
     assert payload["recurring_event_id"] == "recurring_1"
     assert payload["can_edit"] is True
     assert payload["etag"]
+
+
+@pytest.mark.asyncio
+async def test_schedule_today_excludes_task_backed_events_by_default(
+    auth_client: AsyncClient,
+    db_session,
+    test_user,
+    mock_gcal,
+) -> None:
+    now = datetime.now(timezone.utc).replace(hour=14, minute=0, second=0, microsecond=0)
+    event_id = await mock_gcal.create_event(
+        user=None,
+        summary="Synced task",
+        start=now,
+        end=now.replace(hour=15),
+        task_id="today_task_backed",
+    )
+
+    task = Task(
+        id="today_task_backed",
+        user_id=test_user.id,
+        title="Synced task",
+        duration_mins=60,
+        priority=2,
+        status=TaskStatus.SCHEDULED,
+        schedulable=True,
+        buffer_mins=0,
+        is_splittable=False,
+        depends_on=[],
+        created_at=utc(2026, 1, 1),
+        metadata_json={},
+        scheduled_at=now,
+        scheduled_end=now.replace(hour=15),
+        gcal_event_id=event_id,
+    )
+    db_session.add(task)
+    await db_session.commit()
+
+    local_day = now.astimezone(ZoneInfo("Australia/Melbourne")).date().isoformat()
+    response = await auth_client.get(f"/schedule/today?day={local_day}")
+    assert response.status_code == 200
+    items = response.json()["items"]
+
+    assert len([item for item in items if item["type"] == "task"]) == 1
+    assert len([item for item in items if item["type"] == "event"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_schedule_today_includes_and_flags_task_backed_events_with_option(
+    auth_client: AsyncClient,
+    mock_gcal,
+) -> None:
+    now = datetime.now(timezone.utc).replace(hour=9, minute=0, second=0, microsecond=0)
+    await mock_gcal.create_event(
+        user=None,
+        summary="Task-backed event",
+        start=now,
+        end=now.replace(hour=10),
+        task_id="task_123",
+    )
+
+    response = await auth_client.get("/schedule/today?task_events=include")
+    assert response.status_code == 200
+    event_item = next(item for item in response.json()["items"] if item["type"] == "event")
+    assert event_item["gcal_event"]["is_task_event"] is True
+    assert event_item["gcal_event"]["task_id"] == "task_123"
 
 
 # ── GET /schedule/week ────────────────────────────────────────────────────────
@@ -297,6 +365,58 @@ async def test_schedule_week_merges_multiple_accounts(
     ]
     assert "Work block" in events
     assert "Gym" in events
+
+
+@pytest.mark.asyncio
+async def test_schedule_week_calendar_ids_filter_limits_event_sources(
+    auth_client: AsyncClient,
+    mock_gcal,
+) -> None:
+    mock_gcal.seed_calendar(
+        account_id="acct_one",
+        account_email="sam+one@test.com",
+        calendar_id="work",
+        calendar_name="Work",
+        access_role="writer",
+    )
+    mock_gcal.seed_calendar(
+        account_id="acct_one",
+        account_email="sam+one@test.com",
+        calendar_id="personal",
+        calendar_name="Personal",
+        access_role="writer",
+    )
+
+    now = datetime.now(timezone.utc).replace(hour=8, minute=0, second=0, microsecond=0)
+    await mock_gcal.create_event(
+        user=None,
+        summary="Work event",
+        start=now,
+        end=now.replace(hour=9),
+        account_id="acct_one",
+        calendar_id="work",
+        calendar_name="Work",
+    )
+    await mock_gcal.create_event(
+        user=None,
+        summary="Personal event",
+        start=now.replace(hour=18),
+        end=now.replace(hour=19),
+        account_id="acct_one",
+        calendar_id="personal",
+        calendar_name="Personal",
+    )
+
+    response = await auth_client.get("/schedule/week?calendar_ids=work")
+    assert response.status_code == 200
+    events = [
+        item["gcal_event"]["summary"]
+        for day in response.json()
+        for item in day["items"]
+        if item["type"] == "event"
+    ]
+    assert "Work event" in events
+    assert "Personal event" not in events
 
 
 # ── GET /schedule/free-slots ─────────────────────────────────────────────────

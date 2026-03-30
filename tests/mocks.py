@@ -66,6 +66,7 @@ class MockGCalService:
             "recurring_event_id": kwargs.get("recurring_event_id"),
             "timezone": kwargs.get("timezone", "UTC"),
             "html_link": kwargs.get("html_link", f"https://calendar.google.com/event?eid={event_id}"),
+            "task_id": kwargs.get("task_id"),
         }
         return event_id
 
@@ -129,10 +130,30 @@ class MockGCalService:
                 updated += 1
         return updated
 
-    async def get_schedule_events(self, user, time_min, time_max):
+    async def get_schedule_events(
+        self,
+        user,
+        time_min,
+        time_max,
+        include_task_events=False,
+        calendar_ids=None,
+    ):
         events = []
+        selected_pairs = {
+            (cal["account_id"], cal["calendar_id"])
+            for _, calendars in self.account_calendars.items()
+            for cal in calendars
+            if cal.get("selected", True)
+        }
+        include_calendar_ids = set(calendar_ids) if calendar_ids else None
         for event_id, event in self.events.items():
             if event["end"] <= time_min or event["start"] >= time_max:
+                continue
+            if include_calendar_ids is not None and event["calendar_id"] not in include_calendar_ids:
+                continue
+            if selected_pairs and (event["account_id"], event["calendar_id"]) not in selected_pairs:
+                continue
+            if event.get("task_id") and not include_task_events:
                 continue
             events.append(
                 type(
@@ -156,6 +177,8 @@ class MockGCalService:
                         "html_link": event.get("html_link"),
                         "can_edit": event.get("can_edit", True),
                         "etag": event.get("etag"),
+                        "is_task_event": bool(event.get("task_id")),
+                        "task_id": event.get("task_id"),
                     },
                 )
             )

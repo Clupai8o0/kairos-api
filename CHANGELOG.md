@@ -76,6 +76,62 @@ TEMPLATE — Copy this block for each session:
 
 -->
 
+### Session 2026-03-30 — Task-backed event controls + calendar-scoped scheduling views
+
+**What was done:**
+- Updated schedule endpoints to keep task items visible and control task-backed calendar
+  event visibility via query option (`task_events=exclude|include`).
+- Added event payload flags for task linkage: `is_task_event` and `task_id`.
+- Added calendar scoping options:
+  - `GET /schedule/today` and `GET /schedule/week` query `calendar_ids`
+  - `GET /schedule/free-slots` query `calendar_ids`
+  - `POST /schedule/run` body `calendar_ids`
+- Updated Google free/busy behavior to use selected calendars across linked accounts by
+  default, with optional calendar ID scoping override.
+- Added/updated tests in `tests/test_schedule_endpoints.py` and mock behavior updates in
+  `tests/mocks.py` for task-backed event filtering and calendar view scoping.
+- Added frontend handover guide: `references/frontend-handover-schedule-views.md`.
+
+**What changed:**
+- Duplicate timeline entries are now solved by filtering/flagging event rows instead of
+  hiding tasks, preserving task-native editing UX.
+- Calendar selection now affects both schedule views and busy-time calculations used by
+  scheduling/free-slot endpoints.
+
+**Decisions made:**
+- Keep tasks as the primary editable timeline entity.
+- Treat task-backed Google events as optional timeline rows with explicit linkage metadata.
+
+**What's next:**
+- Frontend to adopt `task_events=exclude` as default and use `calendar_ids` for
+  per-view scoping.
+
+**Issues/blockers discovered:**
+- None
+
+### Session 2026-03-30 — Schedule feed dedupe for task-backed calendar events
+
+**What was done:**
+- Updated `GET /schedule/today` and `GET /schedule/week` to suppress task items when a
+  matching Google event exists in the same response window (`task.gcal_event_id == event_id`).
+- Added regression tests in `tests/test_schedule_endpoints.py` for both today and week
+  responses to verify duplicate suppression.
+- Updated `references/api-contract.md` with the dedupe behavior note for both endpoints.
+
+**What changed:**
+- Frontend consumers of schedule endpoints now receive one timeline item for synced tasks,
+  avoiding task + event double rendering.
+
+**Decisions made:**
+- Perform dedupe at the schedule API boundary rather than forcing frontend logic to infer
+  task-event equivalence.
+
+**What's next:**
+- Consider adding an opt-in query flag to include task rows for debug/admin UIs if needed.
+
+**Issues/blockers discovered:**
+- None
+
 ### Session 2026-03-30 — All-day Google event handling parity
 
 ### Session 2026-03-30 — Fix asyncpg manual transaction collision on request auth/query path

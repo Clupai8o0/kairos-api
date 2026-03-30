@@ -61,6 +61,7 @@ class GCalService:
         time_min: datetime,
         time_max: datetime,
         calendar_id: str = "primary",
+        calendar_ids: set[str] | None = None,
     ) -> list[BusySlot]:
         """Get busy time ranges from Google Calendar."""
 
@@ -112,6 +113,8 @@ class GCalService:
         user: User,
         time_min: datetime,
         time_max: datetime,
+        include_task_events: bool = False,
+        calendar_ids: set[str] | None = None,
     ) -> list[GoogleScheduleEvent]:
         """Merged events from all selected calendars across all linked accounts."""
 
@@ -153,15 +156,15 @@ to find free slots.
 ### API Call
 
 ```python
-async def get_free_busy(self, user: User, time_min: datetime, time_max: datetime) -> list[BusySlot]:
-    credentials = self._get_credentials(user)
-    service = build("calendar", "v3", credentials=credentials)
-
-    body = {
-        "timeMin": time_min.isoformat(),
-        "timeMax": time_max.isoformat(),
-        "items": [{"id": user.preferences.get("calendar_id", "primary")}],
-    }
+async def get_free_busy(
+    self,
+    user: User,
+    time_min: datetime,
+    time_max: datetime,
+    calendar_ids: set[str] | None = None,
+) -> list[BusySlot]:
+    # Uses all selected calendars across linked accounts by default.
+    # If calendar_ids is provided, only those calendar IDs are used.
 
     # Use httpx for async (google-api-python-client is sync)
     # Option A: Run in executor
@@ -215,6 +218,21 @@ def get_free_slots(
 
     return [s for s in free if (s.end - s.start).total_seconds() >= 300]  # min 5 min
 ```
+
+---
+
+## Schedule View Event Semantics
+
+`GET /schedule/today` and `GET /schedule/week` now keep task rows visible by default.
+
+- Task-backed Google events are excluded by default (`task_events=exclude`)
+- To include them, pass `task_events=include`
+- Included event rows carry:
+    - `is_task_event: true`
+    - `task_id: <task id>`
+
+This allows frontend timelines to keep task editing and event editing paths separate
+without duplicate cards.
 
 ---
 

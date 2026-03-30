@@ -69,6 +69,8 @@ class GoogleScheduleEvent:
     html_link: str | None
     can_edit: bool
     etag: str | None
+    is_task_event: bool
+    task_id: str | None
 
 
 class GCalAuthError(Exception):
@@ -415,34 +417,72 @@ class GCalService:
         time_min: datetime,
         time_max: datetime,
         calendar_id: str = "primary",
+        calendar_ids: set[str] | None = None,
     ) -> list[BusySlot]:
         """Return busy time ranges from Google Calendar."""
         accounts = await self._accounts_for_user(user)
-        if accounts:
-            account = next((a for a in accounts if a.is_primary), accounts[0])
-            self._validate_scope(account, write=False)
-            creds = await self._get_valid_credentials(user, account)
-            cal_id = user.preferences.get("calendar_id", calendar_id)
-        else:
-            creds = await self._get_valid_credentials(user)
-            cal_id = user.preferences.get("calendar_id", calendar_id)
+        busy_slots: list[BusySlot] = []
 
+        if accounts:
+            queried_any = False
+            for account in accounts:
+                self._validate_scope(account, write=False)
+                calendars = await self._sync_calendars_for_account(user, account)
+                selected_calendar_ids = [
+                    cal.google_calendar_id
+                    for cal in calendars
+                    if cal.selected and (calendar_ids is None or cal.google_calendar_id in calendar_ids)
+                ]
+
+                if not selected_calendar_ids:
+                    continue
+
+                queried_any = True
+                creds = await self._get_valid_credentials(user, account)
+                body = {
+                    "timeMin": time_min.isoformat(),
+                    "timeMax": time_max.isoformat(),
+                    "items": [{"id": cal_id} for cal_id in selected_calendar_ids],
+                }
+
+                def _call() -> dict:
+                    service = self._build_service(creds)
+                    return service.freebusy().query(body=body).execute()
+
+                try:
+                    result: dict = await self._execute_with_retry(_call)
+                except HttpError as exc:
+                    self._handle_http_error(exc)
+
+                for cal_id in selected_calendar_ids:
+                    for busy in result.get("calendars", {}).get(cal_id, {}).get("busy", []):
+                        busy_slots.append(
+                            BusySlot(
+                                start=datetime.fromisoformat(busy["start"]),
+                                end=datetime.fromisoformat(busy["end"]),
+                            )
+                        )
+
+            if queried_any:
+                return sorted(busy_slots, key=lambda slot: slot.start)
+
+        creds = await self._get_valid_credentials(user)
+        cal_id = user.preferences.get("calendar_id", calendar_id)
         body = {
             "timeMin": time_min.isoformat(),
             "timeMax": time_max.isoformat(),
             "items": [{"id": cal_id}],
         }
 
-        def _call() -> dict:
+        def _fallback_call() -> dict:
             service = self._build_service(creds)
             return service.freebusy().query(body=body).execute()
 
         try:
-            result: dict = await self._execute_with_retry(_call)
+            result = await self._execute_with_retry(_fallback_call)
         except HttpError as exc:
             self._handle_http_error(exc)
 
-        busy_slots: list[BusySlot] = []
         for busy in result.get("calendars", {}).get(cal_id, {}).get("busy", []):
             busy_slots.append(
                 BusySlot(
@@ -450,7 +490,7 @@ class GCalService:
                     end=datetime.fromisoformat(busy["end"]),
                 )
             )
-        return busy_slots
+        return sorted(busy_slots, key=lambda slot: slot.start)
 
     async def create_event(
         self,
@@ -626,6 +666,8 @@ class GCalService:
         user: User,
         time_min: datetime,
         time_max: datetime,
+        include_task_events: bool = False,
+        calendar_ids: set[str] | None = None,
     ) -> list[GoogleScheduleEvent]:
         accounts = await self._accounts_for_user(user)
         if not accounts:
@@ -635,7 +677,11 @@ class GCalService:
         for account in accounts:
             self._validate_scope(account, write=False)
             calendars = await self._sync_calendars_for_account(user, account)
-            calendars_by_account[account.id] = [c for c in calendars if c.selected]
+            calendars_by_account[account.id] = [
+                c
+                for c in calendars
+                if c.selected and (calendar_ids is None or c.google_calendar_id in calendar_ids)
+            ]
 
         sem = asyncio.Semaphore(6)
 
@@ -666,6 +712,8 @@ class GCalService:
                 for item in result.get("items", []):
                     event = self._map_schedule_event(account, calendar, item)
                     if event is not None:
+                        if not include_task_events and event.is_task_event:
+                            continue
                         mapped.append(event)
                 return mapped
 
@@ -704,6 +752,8 @@ class GCalService:
         start, end, is_all_day = parsed
 
         can_edit = self._can_edit_calendar(calendar)
+        private = item.get("extendedProperties", {}).get("private", {})
+        task_id = private.get("kairos_task_id")
         return GoogleScheduleEvent(
             event_id=item.get("id", ""),
             provider="google",
@@ -722,6 +772,8 @@ class GCalService:
             html_link=item.get("htmlLink"),
             can_edit=can_edit,
             etag=item.get("etag"),
+            is_task_event=bool(task_id),
+            task_id=task_id,
         )
 
     async def get_event_detail(

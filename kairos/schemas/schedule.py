@@ -8,6 +8,7 @@ from kairos.schemas.task import TaskResponse
 
 class ScheduleRunRequest(BaseModel):
     task_ids: list[str] | None = None  # None = reschedule all pending
+    calendar_ids: list[str] | None = None
 
 
 class ScheduleRunResponse(BaseModel):
@@ -49,6 +50,8 @@ class GCalEventItem(BaseModel):
     html_link: str | None = None
     can_edit: bool
     etag: str | None = None
+    is_task_event: bool = False
+    task_id: str | None = None
 
 
 class ScheduleItem(BaseModel):

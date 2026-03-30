@@ -249,11 +249,13 @@ Returns a summary of what changed.
 ```json
 {
   "task_ids": ["cuid_xxx"],
+  "calendar_ids": ["primary", "work"],
   "horizon_days": 14,
   "dry_run": false
 }
 ```
 - `task_ids`: if provided, only reschedule these tasks. If omitted, reschedule all.
+- `calendar_ids`: optional list of calendar IDs to include when computing busy windows.
 - `horizon_days`: how far ahead to look for free slots. Default from user preferences.
 - `dry_run`: if true, return what would change without writing to GCal.
 
@@ -277,6 +279,14 @@ accounts and selected calendars, ordered by time.
 
 Optional query params:
 - `day` — `YYYY-MM-DD` in user timezone. Defaults to today.
+- `task_events` — `exclude` (default) or `include`.
+  - `exclude`: hide task-backed calendar events (task items remain visible).
+  - `include`: return task-backed calendar events, flagged in payload.
+- `calendar_ids` — comma-separated calendar IDs to include for this view.
+
+Behavior note:
+- Task items are always returned when scheduled.
+- Calendar event items expose task linkage via `is_task_event` + `task_id`.
 
 **Response 200:**
 ```json
@@ -314,6 +324,8 @@ Optional query params:
 - `html_link`
 - `can_edit`
 - `etag`
+- `is_task_event`
+- `task_id`
 
 All-day event semantics:
 - `is_all_day=true` when Google returns `start.date`/`end.date`
@@ -325,6 +337,12 @@ Same item contract as `GET /schedule/today`, grouped by day.
 Optional query params:
 - `start_date` — `YYYY-MM-DD` in user timezone. Defaults to current week's Monday.
 - `end_date` — `YYYY-MM-DD` exclusive in user timezone. Defaults to `start_date + 7 days`.
+- `task_events` — `exclude` (default) or `include`.
+- `calendar_ids` — comma-separated calendar IDs to include for this view.
+
+Behavior note:
+- Task items are always returned when scheduled.
+- Calendar event items expose task linkage via `is_task_event` + `task_id`.
 
 ### `GET /schedule/free-slots`
 Return available time slots within a date range.
@@ -333,6 +351,7 @@ Return available time slots within a date range.
 - `start` — ISO date (required)
 - `end` — ISO date (required)
 - `min_duration_mins` — minimum slot size, default 30
+- `calendar_ids` — optional comma-separated calendar IDs to include when computing busy windows
 
 **Response 200:**
 ```json
