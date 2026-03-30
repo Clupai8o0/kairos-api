@@ -106,6 +106,7 @@ cp .env.example .env
 #   - DATABASE_URL (pre-filled for Docker setup)
 #   - GOOGLE_CLIENT_ID
 #   - GOOGLE_CLIENT_SECRET
+#   - FRONTEND_URL (where OAuth callback should redirect after successful login, e.g. http://localhost:3000/)
 #   - KAIROS_SECRET_KEY (generate one: python -c "import secrets; print(secrets.token_urlsafe(32))")
 ```
 

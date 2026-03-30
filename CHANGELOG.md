@@ -100,6 +100,30 @@ TEMPLATE — Copy this block for each session:
 **Issues/blockers discovered:**
 - None
 
+### Session 2026-03-30 — OAuth callback frontend redirect
+
+**What was done:**
+- Updated `GET /auth/google/callback` in `kairos/api/auth.py` to redirect to frontend after successful OAuth token exchange, instead of returning JWT JSON in the response body.
+- Added `FRONTEND_URL` setting in `kairos/core/config.py` (default: `http://localhost:3000/`).
+- Added `FRONTEND_URL` to `.env.example` for local configuration.
+- Updated auth tests in `tests/test_auth.py` to assert `302` + `Location: http://localhost:3000/` and retained cookie assertions.
+- Updated docs:
+  - `references/api-contract.md` now documents `GET /auth/google/login` and callback redirect behavior.
+  - `README.md` env setup now includes `FRONTEND_URL`.
+
+**What changed:**
+- OAuth callback response contract changed from JSON token payload to browser redirect with auth cookie.
+
+**Decisions made:**
+- Browser OAuth flow should complete by landing users back on the frontend root while keeping JWT in an httpOnly API-domain cookie.
+
+**What's next:**
+- Verify frontend uses `credentials: "include"` on authenticated API calls so cookie-based auth is sent to backend.
+- Optionally add a dedicated frontend route (e.g. `/auth/callback`) and redirect there instead of `/`.
+
+**Issues/blockers discovered:**
+- None
+
 ### Session 2026-03-29 — Frontend integration: cookie auth + schedule response shape
 
 **What was done:**

@@ -32,7 +32,7 @@ async def test_google_oauth_redirect(unauthed_client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_google_callback_creates_user(unauthed_client: AsyncClient, db_session) -> None:
-    """Callback with valid code creates user + returns JWT in body and sets httpOnly cookie."""
+    """Callback with valid code creates user, sets cookie, and redirects to frontend."""
     mock_credentials = MagicMock()
     mock_credentials.token = "google_access_token_123"
     mock_credentials.refresh_token = "google_refresh_token_123"
@@ -59,10 +59,8 @@ async def test_google_callback_creates_user(unauthed_client: AsyncClient, db_ses
         )
         unauthed_client.cookies.clear()
 
-    assert response.status_code == 200
-    data = response.json()
-    assert "access_token" in data
-    assert data["token_type"] == "bearer"
+    assert response.status_code == 302
+    assert response.headers["location"] == "http://localhost:3000/"
     assert "access_token" in response.cookies
 
 
@@ -70,7 +68,7 @@ async def test_google_callback_creates_user(unauthed_client: AsyncClient, db_ses
 async def test_google_callback_existing_user(
     unauthed_client: AsyncClient, db_session, test_user
 ) -> None:
-    """Callback for existing email updates tokens, doesn't duplicate."""
+    """Callback for existing email updates tokens and redirects to frontend."""
     mock_credentials = MagicMock()
     mock_credentials.token = "updated_access_token"
     mock_credentials.refresh_token = "updated_refresh_token"
@@ -97,9 +95,8 @@ async def test_google_callback_existing_user(
         )
         unauthed_client.cookies.clear()
 
-    assert response.status_code == 200
-    data = response.json()
-    assert "access_token" in data
+    assert response.status_code == 302
+    assert response.headers["location"] == "http://localhost:3000/"
 
     # Verify tokens were updated
     await db_session.refresh(test_user)

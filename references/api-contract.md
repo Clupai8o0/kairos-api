@@ -22,25 +22,17 @@ All dates are ISO 8601 UTC.
 
 ## Auth
 
-### `GET /auth/google`
+### `GET /auth/google/login`
 Initiates Google OAuth flow. Redirects to Google consent screen.
 Scopes requested: `openid email profile https://www.googleapis.com/auth/calendar`
 
 ### `GET /auth/google/callback`
-Handles OAuth callback. Creates or updates user. Returns JWT.
+Handles OAuth callback. Creates or updates user, sets JWT as an httpOnly cookie,
+then redirects browser clients to `FRONTEND_URL` (default `http://localhost:3000/`).
 
-**Response 200:**
-```json
-{
-  "access_token": "jwt_token_here",
-  "token_type": "bearer",
-  "user": {
-    "id": "cuid_xxx",
-    "email": "sam@example.com",
-    "name": "Samridh Limbu"
-  }
-}
-```
+**Response 302:**
+- `Location: FRONTEND_URL`
+- `Set-Cookie: access_token=...; HttpOnly; Path=/; SameSite=Lax`
 
 ### `POST /auth/api-key`
 Generate an API key for agent/OpenClaw access.

@@ -12,7 +12,7 @@ from kairos.core.auth import get_current_user
 from kairos.core.config import settings
 from kairos.core.deps import get_db
 from kairos.models.user import User
-from kairos.schemas.auth import ApiKeyResponse, TokenResponse, UserResponse
+from kairos.schemas.auth import ApiKeyResponse, UserResponse
 from kairos.services.auth_service import (
     create_access_token,
     generate_api_key,
@@ -98,21 +98,19 @@ async def google_login() -> RedirectResponse:
     return redirect
 
 
-@router.get("/google/callback", response_model=TokenResponse)
+@router.get("/google/callback")
 async def google_callback(
     code: str,
     state: str,
-    response: Response,
     oauth_state: str | None = Cookie(default=None, alias=_OAUTH_STATE_COOKIE),
     oauth_code_verifier: str | None = Cookie(default=None, alias=_OAUTH_VERIFIER_COOKIE),
     db: AsyncSession = Depends(get_db),
-) -> TokenResponse:
+) -> RedirectResponse:
     """Handle the Google OAuth callback.
 
     Exchanges the authorization `code` for tokens, creates or updates the user record,
-    sets a signed JWT as an httpOnly cookie, and returns the token in the body.
+    sets a signed JWT as an httpOnly cookie, then redirects the browser to the frontend.
     The cookie is the primary auth mechanism for browser clients (`credentials: "include"`).
-    API clients may also use the returned token as `Authorization: Bearer <token>`.
     This endpoint does **not** require prior authentication.
     """
     if oauth_state is None or oauth_code_verifier is None:
@@ -176,9 +174,10 @@ async def google_callback(
     )
 
     jwt_token = create_access_token(user.id)
-    response.delete_cookie(key=_OAUTH_STATE_COOKIE, httponly=True, samesite="lax", path="/")
-    response.delete_cookie(key=_OAUTH_VERIFIER_COOKIE, httponly=True, samesite="lax", path="/")
-    response.set_cookie(
+    redirect = RedirectResponse(url=settings.FRONTEND_URL, status_code=status.HTTP_302_FOUND)
+    redirect.delete_cookie(key=_OAUTH_STATE_COOKIE, httponly=True, samesite="lax", path="/")
+    redirect.delete_cookie(key=_OAUTH_VERIFIER_COOKIE, httponly=True, samesite="lax", path="/")
+    redirect.set_cookie(
         key="access_token",
         value=jwt_token,
         httponly=True,
@@ -187,7 +186,7 @@ async def google_callback(
         secure=settings.KAIROS_ENV == "production",
         path="/",
     )
-    return TokenResponse(access_token=jwt_token)
+    return redirect
 
 
 @router.post("/logout", status_code=204)
