@@ -76,6 +76,76 @@ TEMPLATE — Copy this block for each session:
 
 -->
 
+### Session 2026-03-31 — Calendar is_free support for frontend scheduling toggles
+
+**What was done:**
+- Added per-calendar `is_free` persistence to `google_calendars` model and new migration
+  `e8a1f93d4b21_add_is_free_to_google_calendars.py`.
+- Updated calendar selection patch contract to support partial updates per item:
+  `selected` and/or `is_free`.
+- Added validation rule for selection payloads: at least one of `selected` or `is_free`
+  must be present.
+- Updated `GET /calendar/accounts` and patch response payloads to include `is_free`.
+- Added scheduler scoping support for non-blocking calendars:
+  - `POST /schedule/run` now accepts `free_calendar_ids`
+  - `GET /schedule/free-slots` now accepts `free_calendar_ids`
+  - free calendar IDs outside `calendar_ids` are ignored.
+- Updated `GCalService.get_free_busy` to exclude calendars marked `is_free` and explicit
+  `free_calendar_ids` from blocking windows.
+- Added/updated tests in:
+  - `tests/test_calendar_api.py`
+  - `tests/test_schedule_endpoints.py`
+
+**What changed:**
+- Frontend `PATCH /calendar/accounts/selection` payloads that send only `is_free`
+  now validate and persist successfully.
+- Scheduler/free-slot behavior can now overlap events from calendars marked free.
+
+**Decisions made:**
+- For `free_calendar_ids` not present in `calendar_ids`, backend ignores extras instead of
+  hard failing to keep client integration resilient.
+
+**What's next:**
+- Frontend can remove local optimistic fallback assumptions and trust backend `is_free`
+  state from `/calendar/accounts` as source of truth.
+
+**Issues/blockers discovered:**
+- None
+
+### Session 2026-03-31 — Direct calendar event creation endpoint for chat workflows
+
+**What was done:**
+- Added new endpoint `POST /api/v1/events` for direct Google Calendar event creation
+  outside the task scheduler.
+- Added event create schemas in `kairos/schemas/calendar.py`:
+  - `CreateEventRequest`
+  - `CreateEventResponse`
+- Added `kairos/api/events.py` and registered router under `/events`.
+- Extended `GCalService.create_event` to support:
+  - optional `location`
+  - explicit `calendar_id` targeting (instead of always preferring user default)
+- Added calendar API tests for new endpoint in `tests/test_calendar_api.py`.
+- Stabilized `tests/test_schedule_endpoints.py` date-dependent assertions with fixed
+  datetimes and explicit day windows.
+- Updated docs:
+  - `references/api-contract.md` (new Events section)
+  - `README.md` (core feature list)
+
+**What changed:**
+- Frontend/BFF chat flows can now create real calendar blocks directly via backend API
+  using title/start/end (+ optional description/location/calendar).
+
+**Decisions made:**
+- Keep direct event creation separate from task scheduling semantics; task-based scheduling
+  remains under `/tasks` + `/schedule/*`.
+
+**What's next:**
+- If frontend needs richer create response metadata (account/calendar name, etag, html link),
+  add a follow-up response expansion on `POST /events`.
+
+**Issues/blockers discovered:**
+- None
+
 ### Session 2026-03-30 — Task-backed event controls + calendar-scoped scheduling views
 
 **What was done:**

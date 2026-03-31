@@ -22,6 +22,7 @@ Kairos is a single REST API that handles task creation, project management, tagg
 - Auto-scheduling engine that slots tasks into Google Calendar free time
 - Schedule-on-write — creating a task automatically schedules it
 - Unified schedule reads across linked Google accounts/calendars (day/week)
+- Direct Google Calendar event creation API (`POST /events`)
 - Calendar event details + in-app event editing APIs (`/calendar/*`)
 - Blackout days (days where nothing gets scheduled)
 

@@ -77,6 +77,13 @@ _OPENAPI_TAGS = [
         ),
     },
     {
+        "name": "events",
+        "description": (
+            "Direct calendar event operations for non-task blocks (for example, "
+            "lectures, meetings, or fixed appointments)."
+        ),
+    },
+    {
         "name": "calendar",
         "description": (
             "Connected Google accounts and calendar event APIs. "

@@ -22,6 +22,7 @@ class GoogleCalendar(Base):
     timezone: Mapped[str | None] = mapped_column(String, nullable=True)
     access_role: Mapped[str] = mapped_column(String, default="reader")
     selected: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_free: Mapped[bool] = mapped_column(Boolean, default=False)
     is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

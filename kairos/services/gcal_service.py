@@ -47,6 +47,7 @@ class GoogleCalendarInfo:
     timezone: str | None
     access_role: str
     selected: bool
+    is_free: bool
     is_primary: bool
 
 
@@ -319,6 +320,7 @@ class GCalService:
                     timezone=item.get("timeZone"),
                     access_role=item.get("accessRole", "reader"),
                     selected=provider_selected,
+                    is_free=False,
                     is_primary=bool(item.get("primary", False)),
                 )
                 self._db.add(cal)
@@ -349,6 +351,7 @@ class GCalService:
                         timezone=cal.timezone,
                         access_role=cal.access_role,
                         selected=cal.selected,
+                        is_free=cal.is_free,
                         is_primary=cal.is_primary,
                     )
                 )
@@ -387,7 +390,14 @@ class GCalService:
         for selection in selections:
             account_id = selection.get("account_id")
             calendar_id = selection.get("calendar_id")
-            selected = bool(selection.get("selected"))
+            selected = selection.get("selected")
+            is_free = selection.get("is_free")
+
+            if selected is None and is_free is None:
+                raise GCalValidationError(
+                    "invalid_calendar_selection_payload",
+                    "At least one of selected or is_free must be provided",
+                )
 
             if account_id not in account_ids:
                 raise GCalValidationError(
@@ -402,8 +412,12 @@ class GCalService:
                     f"Unknown account/calendar pair: {account_id}/{calendar_id}",
                 )
 
-            if cal.selected != selected:
-                cal.selected = selected
+            if selected is not None and cal.selected != bool(selected):
+                cal.selected = bool(selected)
+                updated += 1
+
+            if is_free is not None and cal.is_free != bool(is_free):
+                cal.is_free = bool(is_free)
                 updated += 1
 
         await self._db.flush()
@@ -418,6 +432,7 @@ class GCalService:
         time_max: datetime,
         calendar_id: str = "primary",
         calendar_ids: set[str] | None = None,
+        free_calendar_ids: set[str] | None = None,
     ) -> list[BusySlot]:
         """Return busy time ranges from Google Calendar."""
         accounts = await self._accounts_for_user(user)
@@ -431,7 +446,15 @@ class GCalService:
                 selected_calendar_ids = [
                     cal.google_calendar_id
                     for cal in calendars
-                    if cal.selected and (calendar_ids is None or cal.google_calendar_id in calendar_ids)
+                    if (
+                        cal.selected
+                        and not cal.is_free
+                        and (calendar_ids is None or cal.google_calendar_id in calendar_ids)
+                        and (
+                            free_calendar_ids is None
+                            or cal.google_calendar_id not in free_calendar_ids
+                        )
+                    )
                 ]
 
                 if not selected_calendar_ids:
@@ -499,6 +522,7 @@ class GCalService:
         start: datetime,
         end: datetime,
         description: str | None = None,
+        location: str | None = None,
         task_id: str | None = None,
         calendar_id: str = "primary",
     ) -> str:
@@ -509,7 +533,7 @@ class GCalService:
             self._validate_scope(account, write=True)
         creds = await self._get_valid_credentials(user, account)
         tz = user.preferences.get("timezone", "Australia/Melbourne")
-        cal_id = user.preferences.get("calendar_id", calendar_id)
+        cal_id = calendar_id or user.preferences.get("calendar_id", "primary")
 
         event_body: dict = {
             "summary": summary,
@@ -521,6 +545,8 @@ class GCalService:
         }
         if description:
             event_body["description"] = description
+        if location:
+            event_body["location"] = location
         if task_id:
             event_body["extendedProperties"]["private"]["kairos_task_id"] = task_id
 
@@ -685,10 +711,8 @@ class GCalService:
 
         sem = asyncio.Semaphore(6)
 
-        async def _fetch(account: GoogleAccount, calendar: GoogleCalendar) -> list[GoogleScheduleEvent]:
+        async def _fetch(account: GoogleAccount, calendar: GoogleCalendar, creds: Credentials) -> list[GoogleScheduleEvent]:
             async with sem:
-                creds = await self._get_valid_credentials(user, account)
-
                 def _call() -> dict:
                     service = self._build_service(creds)
                     return (
@@ -717,8 +741,16 @@ class GCalService:
                         mapped.append(event)
                 return mapped
 
+        # Pre-fetch credentials sequentially — SQLAlchemy sessions are not
+        # concurrency-safe, so we must not call _get_valid_credentials inside
+        # asyncio.gather where multiple coroutines share the same session.
+        creds_by_account: dict[str, Credentials] = {}
+        for account in accounts:
+            if calendars_by_account.get(account.id):
+                creds_by_account[account.id] = await self._get_valid_credentials(user, account)
+
         tasks = [
-            _fetch(account, calendar)
+            _fetch(account, calendar, creds_by_account[account.id])
             for account in accounts
             for calendar in calendars_by_account.get(account.id, [])
         ]

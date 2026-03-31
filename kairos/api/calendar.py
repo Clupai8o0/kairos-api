@@ -40,6 +40,7 @@ def _group_accounts(infos: list) -> list[ConnectedAccountResponse]:
                 access_role=info.access_role,
                 can_edit=info.access_role in {"owner", "writer"},
                 selected=info.selected,
+                is_free=info.is_free,
                 is_primary=info.is_primary,
             )
         )

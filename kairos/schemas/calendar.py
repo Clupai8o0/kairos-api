@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class CalendarRef(BaseModel):
@@ -11,6 +11,7 @@ class CalendarRef(BaseModel):
     access_role: str
     can_edit: bool
     selected: bool
+    is_free: bool
     is_primary: bool
 
 
@@ -57,7 +58,14 @@ class UpdateEventRequest(BaseModel):
 class CalendarSelectionItem(BaseModel):
     account_id: str
     calendar_id: str
-    selected: bool
+    selected: bool | None = None
+    is_free: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_selection_payload(self):
+        if self.selected is None and self.is_free is None:
+            raise ValueError("At least one of selected or is_free must be provided")
+        return self
 
 
 class UpdateCalendarSelectionRequest(BaseModel):
@@ -67,3 +75,23 @@ class UpdateCalendarSelectionRequest(BaseModel):
 class UpdateCalendarSelectionResponse(BaseModel):
     updated: int
     accounts: list[ConnectedAccountResponse]
+
+
+class CreateEventRequest(BaseModel):
+    title: str
+    start: datetime
+    end: datetime
+    description: str | None = None
+    location: str | None = None
+    calendar_id: str | None = None
+
+
+class CreateEventResponse(BaseModel):
+    event_id: str
+    provider: Literal["google"] = "google"
+    title: str
+    start: datetime
+    end: datetime
+    description: str | None = None
+    location: str | None = None
+    calendar_id: str

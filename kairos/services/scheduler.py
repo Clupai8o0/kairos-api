@@ -237,6 +237,7 @@ async def run_scheduler(
     user: User,
     task_ids: list[str] | None = None,
     calendar_ids: set[str] | None = None,
+    free_calendar_ids: set[str] | None = None,
 ) -> ScheduleResult:
     """
     Schedule pending tasks into Google Calendar.
@@ -274,7 +275,13 @@ async def run_scheduler(
 
     # ── 4. Fetch free/busy from GCal ──────────────────────────────────────────
     try:
-        busy_slots = await gcal.get_free_busy(user, now, horizon_end, calendar_ids=calendar_ids)
+        busy_slots = await gcal.get_free_busy(
+            user,
+            now,
+            horizon_end,
+            calendar_ids=calendar_ids,
+            free_calendar_ids=free_calendar_ids,
+        )
     except Exception as exc:
         logger.warning("GCal free/busy fetch failed: %s", exc)
         # Fail open — mark all as skipped rather than crashing
@@ -352,7 +359,13 @@ async def run_scheduler(
                 if attempt < 2:
                     # Refresh free/busy and retry
                     try:
-                        busy_slots = await gcal.get_free_busy(user, now, horizon_end)
+                        busy_slots = await gcal.get_free_busy(
+                            user,
+                            now,
+                            horizon_end,
+                            calendar_ids=calendar_ids,
+                            free_calendar_ids=free_calendar_ids,
+                        )
                         all_free_slots = _recompute_free_slots(
                             busy_slots, now, horizon_end, blackout_dates, work_start, work_end
                         )

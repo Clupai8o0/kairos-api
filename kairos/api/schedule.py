@@ -53,12 +53,16 @@ async def run_schedule(
     `skipped` (dependencies unmet or already done), and `details`.
     """
     calendar_ids = set(payload.calendar_ids) if payload.calendar_ids else None
+    free_calendar_ids = set(payload.free_calendar_ids) if payload.free_calendar_ids else None
+    if calendar_ids and free_calendar_ids:
+        free_calendar_ids = free_calendar_ids & calendar_ids
     result = await run_scheduler(
         db,
         gcal,
         user,
         task_ids=payload.task_ids,
         calendar_ids=calendar_ids,
+        free_calendar_ids=free_calendar_ids,
     )
     return ScheduleRunResponse(
         scheduled=result.scheduled,
@@ -344,6 +348,10 @@ async def free_slots(
         default=None,
         description="Comma-separated calendar IDs to include when computing busy windows",
     ),
+    free_calendar_ids: str | None = Query(
+        default=None,
+        description="Comma-separated calendar IDs treated as free for slot computation",
+    ),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
     gcal: GCalService = Depends(get_gcal_service),
@@ -359,9 +367,22 @@ async def free_slots(
     now = datetime.now(timezone.utc)
     horizon_end = now + timedelta(days=max(1, min(days, 30)))
     selected_calendar_ids = set(c.strip() for c in calendar_ids.split(",") if c.strip()) if calendar_ids else None
+    selected_free_calendar_ids = (
+        set(c.strip() for c in free_calendar_ids.split(",") if c.strip())
+        if free_calendar_ids
+        else None
+    )
+    if selected_calendar_ids and selected_free_calendar_ids:
+        selected_free_calendar_ids = selected_free_calendar_ids & selected_calendar_ids
 
     try:
-        busy = await gcal.get_free_busy(user, now, horizon_end, calendar_ids=selected_calendar_ids)
+        busy = await gcal.get_free_busy(
+            user,
+            now,
+            horizon_end,
+            calendar_ids=selected_calendar_ids,
+            free_calendar_ids=selected_free_calendar_ids,
+        )
     except GCalAuthError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

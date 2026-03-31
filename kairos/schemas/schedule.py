@@ -9,6 +9,7 @@ from kairos.schemas.task import TaskResponse
 class ScheduleRunRequest(BaseModel):
     task_ids: list[str] | None = None  # None = reschedule all pending
     calendar_ids: list[str] | None = None
+    free_calendar_ids: list[str] | None = None
 
 
 class ScheduleRunResponse(BaseModel):

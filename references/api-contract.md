@@ -15,9 +15,10 @@ All dates are ISO 8601 UTC.
 4. [Tags](#tags)
 5. [Views](#views)
 6. [Schedule](#schedule)
-7. [Calendar](#calendar)
-8. [Blackout Days](#blackout-days)
-9. [Health](#health)
+7. [Events](#events)
+8. [Calendar](#calendar)
+9. [Blackout Days](#blackout-days)
+10. [Health](#health)
 
 ---
 
@@ -250,12 +251,15 @@ Returns a summary of what changed.
 {
   "task_ids": ["cuid_xxx"],
   "calendar_ids": ["primary", "work"],
+  "free_calendar_ids": ["work"],
   "horizon_days": 14,
   "dry_run": false
 }
 ```
 - `task_ids`: if provided, only reschedule these tasks. If omitted, reschedule all.
 - `calendar_ids`: optional list of calendar IDs to include when computing busy windows.
+- `free_calendar_ids`: optional list of calendar IDs treated as non-blocking during slot finding.
+  If `calendar_ids` is provided, IDs outside that set are ignored.
 - `horizon_days`: how far ahead to look for free slots. Default from user preferences.
 - `dry_run`: if true, return what would change without writing to GCal.
 
@@ -352,6 +356,7 @@ Return available time slots within a date range.
 - `end` — ISO date (required)
 - `min_duration_mins` — minimum slot size, default 30
 - `calendar_ids` — optional comma-separated calendar IDs to include when computing busy windows
+- `free_calendar_ids` — optional comma-separated calendar IDs treated as non-blocking
 
 **Response 200:**
 ```json
@@ -365,6 +370,49 @@ Return available time slots within a date range.
 
 ---
 
+## Events
+
+### `POST /events`
+Create a Google Calendar event directly (outside task scheduling).
+
+Request body:
+```json
+{
+  "title": "Math lecture",
+  "start": "2026-04-01T10:00:00Z",
+  "end": "2026-04-01T12:00:00Z",
+  "description": "Chapter 4",
+  "location": "Campus Room 2",
+  "calendar_id": "primary"
+}
+```
+
+Rules:
+- `title`, `start`, and `end` are required
+- `end` must be after `start`
+- `calendar_id` is optional (defaults to `primary`)
+
+Response 201:
+```json
+{
+  "event_id": "google_evt_123",
+  "provider": "google",
+  "title": "Math lecture",
+  "start": "2026-04-01T10:00:00Z",
+  "end": "2026-04-01T12:00:00Z",
+  "description": "Chapter 4",
+  "location": "Campus Room 2",
+  "calendar_id": "primary"
+}
+```
+
+Error codes:
+- `google_auth_required` (401)
+- `calendar_write_scope_missing` (403)
+- `invalid_date_range` (422)
+
+---
+
 ## Calendar
 
 ### `GET /calendar/accounts`
@@ -374,6 +422,7 @@ Returns writable/read-only flags per calendar:
 - `access_role` — Google role (`owner`, `writer`, `reader`, ...)
 - `can_edit` — derived boolean used by frontend
 - `selected` — persisted per-user schedule visibility preference
+- `is_free` — persisted per-user non-blocking preference for scheduler/free-slot calculations
 
 ### `PATCH /calendar/accounts/selection`
 Persist per-user calendar visibility preferences.
@@ -382,7 +431,8 @@ Request body:
 ```json
 {
   "selections": [
-    {"account_id": "acct_123", "calendar_id": "primary", "selected": false}
+    {"account_id": "acct_123", "calendar_id": "primary", "selected": false},
+    {"account_id": "acct_123", "calendar_id": "work", "is_free": true}
   ]
 }
 ```
@@ -403,6 +453,7 @@ Response body:
           "access_role": "owner",
           "can_edit": true,
           "selected": false,
+          "is_free": false,
           "is_primary": true
         }
       ]
@@ -414,6 +465,7 @@ Response body:
 Rules:
 - Idempotent: setting the current value returns `updated: 0`
 - Unknown `account_id`/`calendar_id` pair returns `422` with `unknown_calendar_selection`
+- Each selection item must include at least one of `selected` or `is_free`
 - Preferences persist across refreshes/sessions and provider sync
 
 ### `GET /calendar/events/:event_id?account_id=...&calendar_id=...`

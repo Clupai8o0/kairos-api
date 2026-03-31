@@ -25,6 +25,7 @@ class MockGCalService:
         calendar_name: str,
         access_role: str = "writer",
         selected: bool = True,
+        is_free: bool = False,
         timezone: str | None = "UTC",
         is_primary: bool = False,
     ) -> None:
@@ -36,6 +37,7 @@ class MockGCalService:
                 "calendar_name": calendar_name,
                 "access_role": access_role,
                 "selected": selected,
+                "is_free": is_free,
                 "timezone": timezone,
                 "is_primary": is_primary,
             }
@@ -102,6 +104,7 @@ class MockGCalService:
                             "timezone": cal["timezone"],
                             "access_role": cal["access_role"],
                             "selected": cal["selected"],
+                            "is_free": cal.get("is_free", False),
                             "is_primary": cal["is_primary"],
                         },
                     )
@@ -125,8 +128,23 @@ class MockGCalService:
                     "unknown_calendar_selection",
                     f"Unknown account/calendar pair: {account_id}/{calendar_id}",
                 )
-            if bool(target["selected"]) != bool(selection["selected"]):
-                target["selected"] = bool(selection["selected"])
+            selected = selection.get("selected")
+            is_free = selection.get("is_free")
+
+            if selected is None and is_free is None:
+                from kairos.services.gcal_service import GCalValidationError
+
+                raise GCalValidationError(
+                    "invalid_calendar_selection_payload",
+                    "At least one of selected or is_free must be provided",
+                )
+
+            if selected is not None and bool(target["selected"]) != bool(selected):
+                target["selected"] = bool(selected)
+                updated += 1
+
+            if is_free is not None and bool(target.get("is_free", False)) != bool(is_free):
+                target["is_free"] = bool(is_free)
                 updated += 1
         return updated
 

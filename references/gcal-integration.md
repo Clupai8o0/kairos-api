@@ -62,6 +62,7 @@ class GCalService:
         time_max: datetime,
         calendar_id: str = "primary",
         calendar_ids: set[str] | None = None,
+        free_calendar_ids: set[str] | None = None,
     ) -> list[BusySlot]:
         """Get busy time ranges from Google Calendar."""
 
@@ -162,9 +163,12 @@ async def get_free_busy(
     time_min: datetime,
     time_max: datetime,
     calendar_ids: set[str] | None = None,
+    free_calendar_ids: set[str] | None = None,
 ) -> list[BusySlot]:
     # Uses all selected calendars across linked accounts by default.
     # If calendar_ids is provided, only those calendar IDs are used.
+    # Calendars marked `is_free=true` (or explicitly provided via free_calendar_ids)
+    # are treated as non-blocking and excluded from busy windows.
 
     # Use httpx for async (google-api-python-client is sync)
     # Option A: Run in executor
