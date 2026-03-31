@@ -303,7 +303,7 @@ async def run_scheduler(
     all_free_slots: list[TimeSlot] = []
     current = now.date()
     while current <= horizon_end.date():
-        if current not in blackout_dates and current.weekday() < 5:
+        if current not in blackout_dates:
             day_slots = get_free_slots(busy_slots, current, work_start, work_end)
             # Clip to future (don't schedule in the past within today)
             clipped = [
@@ -325,6 +325,20 @@ async def run_scheduler(
             result.skipped += 1
             result.details.append({"task_id": task.id, "status": "skipped", "reason": "unmet_dependencies"})
             continue
+
+        # Clear any existing GCal event(s) before rescheduling
+        if task.gcal_event_id:
+            old_ids = task.gcal_event_id
+            try:
+                ids_to_delete = json.loads(old_ids) if old_ids.startswith("[") else [old_ids]
+            except (ValueError, AttributeError):
+                ids_to_delete = [old_ids]
+            for old_eid in ids_to_delete:
+                try:
+                    await gcal.delete_event(user, old_eid)
+                except Exception as exc:
+                    logger.warning("Failed to delete old GCal event %s: %s", old_eid, exc)
+            task.gcal_event_id = None
 
         # Try to slot the task (with conflict retry)
         scheduled = False
@@ -485,7 +499,7 @@ def _recompute_free_slots(
     all_free: list[TimeSlot] = []
     current = now.date()
     while current <= horizon_end.date():
-        if current not in blackout_dates and current.weekday() < 5:
+        if current not in blackout_dates:
             day_slots = get_free_slots(busy, current, work_start, work_end)
             clipped = [
                 TimeSlot(start=max(s.start, now), end=s.end)

@@ -10,7 +10,7 @@
 
 ## Current State
 
-**Last updated:** 2026-03-30
+**Last updated:** 2026-03-31
 
 **Build phase:** Frontend-ready — v1 feature-complete + frontend integration
 
@@ -75,6 +75,38 @@ TEMPLATE — Copy this block for each session:
 - Issue description
 
 -->
+
+### Session 2026-03-31 — Scheduler: weekend scheduling + clear old events on reschedule
+
+**What was done:**
+- Removed weekend exclusion from scheduler free-slot computation. All 7 days of the
+  week are now considered (blackout days still block any day as before).
+- Added old GCal event deletion before rescheduling: when a task that already has a
+  `gcal_event_id` is processed by `run_scheduler`, the old event(s) are deleted from
+  GCal before a new one is created. Handles both single event IDs and JSON arrays
+  from split tasks.
+
+**What changed:**
+- `run_scheduler` in `kairos/services/scheduler.py`:
+  - Removed `current.weekday() < 5` guard in main free-slot build loop.
+  - Removed `current.weekday() < 5` guard in `_recompute_free_slots`.
+  - Added pre-scheduling block that deletes `task.gcal_event_id` event(s) from GCal
+    and clears the field before writing a new event.
+
+**Decisions made:**
+- Scheduler now includes weekends by default. Blackout days remain the intended
+  mechanism for blocking any day (weekend or otherwise).
+- Reschedule always deletes the old GCal event — no orphaned events.
+
+**What's next:**
+- If users want to block weekends by default, add a user preference
+  (`work_days: list[int]`) and wire it into the free-slot loop.
+- Consider surfacing a "reschedule all" strategy option (full-optimise vs. only unscheduled).
+
+**Issues/blockers discovered:**
+- None
+
+---
 
 ### Session 2026-03-31 — Event-level transparency (free/busy per event)
 

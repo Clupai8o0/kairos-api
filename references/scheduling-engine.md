@@ -225,8 +225,8 @@ On blackout days, the scheduler treats the entire day as unavailable.
 async def get_available_days(user_id: str, start: date, end: date) -> list[date]:
     blackout_dates = await get_blackout_dates(user_id, start, end)
     all_dates = [start + timedelta(days=i) for i in range((end - start).days + 1)]
-    return [d for d in all_dates if d not in blackout_dates and d.weekday() < 5]
-    # weekday() < 5 = Mon-Fri. Make configurable later.
+    return [d for d in all_dates if d not in blackout_dates]
+    # All days of the week are considered. Use blackout days to block weekends if needed.
 ```
 
 ---
@@ -235,12 +235,15 @@ async def get_available_days(user_id: str, start: date, end: date) -> list[date]
 
 When `POST /schedule/run` is called for all tasks:
 
-1. **Don't move tasks that are already well-placed.** If a task is scheduled and its slot
+1. **Old events are always deleted first.** If a task already has a `gcal_event_id`, the
+   existing GCal event(s) are deleted before a new one is created. This prevents orphaned
+   calendar events accumulating across reschedule runs.
+2. **Don't move tasks that are already well-placed.** If a task is scheduled and its slot
    is still valid (no conflict, before deadline), keep it unless a significantly better
    slot opened up. "Significantly better" = 2+ hours earlier.
-2. **Unscheduled tasks get priority.** Process unscheduled tasks before considering
+3. **Unscheduled tasks get priority.** Process unscheduled tasks before considering
    rescheduling already-scheduled ones.
-3. **Cancelled GCal events mean unscheduled.** If someone deletes a Kairos event from GCal
+4. **Cancelled GCal events mean unscheduled.** If someone deletes a Kairos event from GCal
    directly, the next schedule run should detect the missing event and re-slot the task.
 
 ---
