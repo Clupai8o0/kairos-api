@@ -53,6 +53,7 @@ class GCalEventItem(BaseModel):
     etag: str | None = None
     is_task_event: bool = False
     task_id: str | None = None
+    transparency: Literal["opaque", "transparent"] = "opaque"
 
 
 class ScheduleItem(BaseModel):

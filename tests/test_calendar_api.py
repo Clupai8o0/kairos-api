@@ -395,3 +395,105 @@ async def test_patch_calendar_selection_unknown_pair_returns_422(
     assert response.status_code == 422
     detail = response.json()["detail"]
     assert detail["code"] == "unknown_calendar_selection"
+
+
+@pytest.mark.asyncio
+async def test_patch_calendar_event_transparency_updates_and_returns(
+    auth_client: AsyncClient, mock_gcal
+) -> None:
+    """Patching transparency writes it to the event and returns it in the response."""
+    mock_gcal.seed_calendar(
+        account_id="acct_one",
+        account_email="sam+one@test.com",
+        calendar_id="work",
+        calendar_name="Work",
+        access_role="writer",
+    )
+    event_id = await mock_gcal.create_event(
+        user=None,
+        summary="Standup",
+        start=utc(2026, 4, 1, 9, 0),
+        end=utc(2026, 4, 1, 9, 30),
+        account_id="acct_one",
+        calendar_id="work",
+        calendar_name="Work",
+        etag="v1",
+    )
+
+    response = await auth_client.patch(
+        f"/calendar/events/{event_id}",
+        json={
+            "account_id": "acct_one",
+            "calendar_id": "work",
+            "transparency": "transparent",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["transparency"] == "transparent"
+    # verify stored state updated
+    assert mock_gcal.events[event_id]["transparency"] == "transparent"
+
+
+@pytest.mark.asyncio
+async def test_patch_calendar_event_transparency_defaults_to_opaque(
+    auth_client: AsyncClient, mock_gcal
+) -> None:
+    """Events with no transparency field set should surface as opaque."""
+    mock_gcal.seed_calendar(
+        account_id="acct_one",
+        account_email="sam+one@test.com",
+        calendar_id="work",
+        calendar_name="Work",
+        access_role="writer",
+    )
+    event_id = await mock_gcal.create_event(
+        user=None,
+        summary="Planning",
+        start=utc(2026, 4, 2, 10, 0),
+        end=utc(2026, 4, 2, 11, 0),
+        account_id="acct_one",
+        calendar_id="work",
+        calendar_name="Work",
+    )
+
+    response = await auth_client.get(
+        f"/calendar/events/{event_id}",
+        params={"account_id": "acct_one", "calendar_id": "work"},
+    )
+    assert response.status_code == 200
+    assert response.json()["transparency"] == "opaque"
+
+
+@pytest.mark.asyncio
+async def test_schedule_week_includes_transparency_on_events(
+    auth_client: AsyncClient, mock_gcal
+) -> None:
+    """GET /schedule/week event items include transparency field."""
+    mock_gcal.seed_calendar(
+        account_id="acct_one",
+        account_email="sam+one@test.com",
+        calendar_id="work",
+        calendar_name="Work",
+        access_role="writer",
+        selected=True,
+    )
+    await mock_gcal.create_event(
+        user=None,
+        summary="Transparent meeting",
+        start=utc(2026, 4, 1, 9, 0),
+        end=utc(2026, 4, 1, 10, 0),
+        account_id="acct_one",
+        calendar_id="work",
+        calendar_name="Work",
+        transparency="transparent",
+    )
+
+    response = await auth_client.get(
+        "/schedule/week",
+        params={"start_date": "2026-03-30", "end_date": "2026-04-06"},
+    )
+    assert response.status_code == 200
+    all_items = [item for day in response.json() for item in day["items"]]
+    events = [item["gcal_event"] for item in all_items if item["type"] == "event"]
+    assert any(e["transparency"] == "transparent" for e in events)

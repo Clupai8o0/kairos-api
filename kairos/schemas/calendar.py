@@ -40,6 +40,7 @@ class EventDetailResponse(BaseModel):
     html_link: str | None = None
     can_edit: bool
     etag: str | None = None
+    transparency: Literal["opaque", "transparent"] = "opaque"
 
 
 class UpdateEventRequest(BaseModel):
@@ -53,6 +54,7 @@ class UpdateEventRequest(BaseModel):
     start: datetime | None = None
     end: datetime | None = None
     timezone: str | None = None
+    transparency: Literal["opaque", "transparent"] | None = None
 
 
 class CalendarSelectionItem(BaseModel):

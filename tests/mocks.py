@@ -69,6 +69,7 @@ class MockGCalService:
             "timezone": kwargs.get("timezone", "UTC"),
             "html_link": kwargs.get("html_link", f"https://calendar.google.com/event?eid={event_id}"),
             "task_id": kwargs.get("task_id"),
+            "transparency": kwargs.get("transparency", "opaque"),
         }
         return event_id
 
@@ -197,6 +198,7 @@ class MockGCalService:
                         "etag": event.get("etag"),
                         "is_task_event": bool(event.get("task_id")),
                         "task_id": event.get("task_id"),
+                        "transparency": event.get("transparency", "opaque"),
                     },
                 )
             )
@@ -241,7 +243,7 @@ class MockGCalService:
         if provided_etag and provided_etag != event.get("etag"):
             raise GCalConflictError("calendar_event_etag_mismatch")
 
-        for field in ("summary", "description", "location", "start", "end"):
+        for field in ("summary", "description", "location", "start", "end", "transparency"):
             if kwargs.get(field) is not None:
                 event[field] = kwargs[field]
         if kwargs.get("timezone_name") is not None:

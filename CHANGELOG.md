@@ -76,6 +76,54 @@ TEMPLATE — Copy this block for each session:
 
 -->
 
+### Session 2026-03-31 — Event-level transparency (free/busy per event)
+
+**What was done:**
+- Added `transparency: str` field to `GoogleScheduleEvent` dataclass.
+- Mapped `transparency` from GCal API response in `_map_schedule_event`
+  (`item.get("transparency") or "opaque"` — GCal omits the field for opaque events).
+- Added `transparency: Literal["opaque", "transparent"] = "opaque"` to:
+  - `GCalEventItem` schema (schedule responses)
+  - `EventDetailResponse` schema (calendar event detail / PATCH response)
+- Added `transparency: Literal["opaque", "transparent"] | None = None` to `UpdateEventRequest`.
+- Extended `GCalService.patch_event` to accept and write `transparency` to GCal `events.patch` body.
+- Updated `PATCH /calendar/events/{id}` API handler to pass `transparency` from payload.
+- Threaded `transparency` through both schedule endpoint event dict constructions
+  (`/schedule/today` and `/schedule/week`).
+- Updated `MockGCalService`:
+  - `create_event` stores `transparency` (default `"opaque"`)
+  - `get_schedule_events` returns `transparency` on mock event objects
+  - `patch_event` includes `"transparency"` in writable fields list
+- Added 3 new tests in `tests/test_calendar_api.py`:
+  - `test_patch_calendar_event_transparency_updates_and_returns`
+  - `test_patch_calendar_event_transparency_defaults_to_opaque`
+  - `test_schedule_week_includes_transparency_on_events`
+- Also fixed `asyncio.gather` concurrency bug in `get_schedule_events`: pre-fetch
+  credentials sequentially (per account) before gather, pass resolved `Credentials`
+  into `_fetch` so no DB access occurs during concurrent GCal API calls.
+- Applied pending Alembic migration `e8a1f93d4b21` (`is_free` column) to local DB.
+- 45 tests passing (calendar API + schedule endpoints + gcal service suites).
+
+**What changed:**
+- `get_schedule_events` no longer calls `_get_valid_credentials` inside `asyncio.gather`;
+  credentials are now fetched sequentially before the gather phase. This fixes
+  `Session is already flushing` / `cannot perform operation: another operation is in progress`
+  errors when multiple accounts have calendars selected.
+
+**Decisions made:**
+- No scheduler logic change needed for event-level transparency — the GCal freebusy API
+  already excludes transparent events from busy windows natively. Writing
+  `transparency="transparent"` to a GCal event via `PATCH` is sufficient for the
+  scheduler to treat it as a free slot on the next `POST /schedule/run`.
+
+**What's next:**
+- Frontend can now read `transparency` from any event in schedule responses and render
+  a free/busy toggle per event.
+- Frontend PATCH call: add `transparency: "opaque" | "transparent"` to `CalendarEventUpdateRequest`.
+
+**Issues/blockers discovered:**
+- None
+
 ### Session 2026-03-31 — Calendar is_free support for frontend scheduling toggles
 
 **What was done:**

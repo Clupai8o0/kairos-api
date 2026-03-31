@@ -72,6 +72,7 @@ class GoogleScheduleEvent:
     etag: str | None
     is_task_event: bool
     task_id: str | None
+    transparency: str  # "opaque" | "transparent"
 
 
 class GCalAuthError(Exception):
@@ -806,6 +807,7 @@ class GCalService:
             etag=item.get("etag"),
             is_task_event=bool(task_id),
             task_id=task_id,
+            transparency=item.get("transparency") or "opaque",
         )
 
     async def get_event_detail(
@@ -851,6 +853,7 @@ class GCalService:
         start: datetime | None,
         end: datetime | None,
         timezone_name: str | None,
+        transparency: str | None = None,
     ) -> GoogleScheduleEvent:
         account, calendar = await self._owned_calendar(user, account_id, calendar_id)
         if not self._can_edit_calendar(calendar):
@@ -880,6 +883,8 @@ class GCalService:
             patch_body["description"] = description
         if location is not None:
             patch_body["location"] = location
+        if transparency is not None:
+            patch_body["transparency"] = transparency
 
         active_tz = timezone_name or (
             current.get("start", {}).get("timeZone")

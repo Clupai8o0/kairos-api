@@ -190,6 +190,7 @@ async def patch_event(
             start=payload.start,
             end=payload.end,
             timezone_name=payload.timezone,
+            transparency=payload.transparency,
         )
     except GCalConflictError as exc:
         raise HTTPException(

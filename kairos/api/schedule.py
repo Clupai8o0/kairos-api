@@ -185,6 +185,7 @@ async def schedule_today(
                     "etag": event.etag,
                     "is_task_event": event.is_task_event,
                     "task_id": event.task_id,
+                    "transparency": event.transparency,
                 },
             )
         )
@@ -322,6 +323,7 @@ async def schedule_week(
                     "etag": event.etag,
                     "is_task_event": event.is_task_event,
                     "task_id": event.task_id,
+                    "transparency": event.transparency,
                 },
             )
         )
