@@ -3,11 +3,13 @@
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from kairos.models.blackout_day import BlackoutDay
 from kairos.models.schedule_log import ScheduleLog
@@ -99,10 +101,9 @@ def get_free_slots(
     day: date,
     work_start: time,
     work_end: time,
+    tz: tzinfo = timezone.utc,
 ) -> list[TimeSlot]:
     """Return free time blocks within work hours on a given day."""
-    tz = timezone.utc  # All datetimes kept UTC; caller localises for display
-
     day_start = datetime.combine(day, work_start, tzinfo=tz)
     day_end = datetime.combine(day, work_end, tzinfo=tz)
 
@@ -293,7 +294,14 @@ async def run_scheduler(
         return result
 
     # ── 5. Fetch blackout days ─────────────────────────────────────────────────
-    blackout_dates = await _get_blackout_dates(db, user.id, now.date(), horizon_end.date())
+    tz_name = user.preferences.get("timezone", "UTC")
+    try:
+        user_tz: tzinfo = ZoneInfo(tz_name)
+    except (KeyError, ZoneInfoNotFoundError):
+        user_tz = timezone.utc
+    now_local = now.astimezone(user_tz)
+    horizon_end_local = horizon_end.astimezone(user_tz)
+    blackout_dates = await _get_blackout_dates(db, user.id, now_local.date(), horizon_end_local.date())
 
     # ── 6. Parse work hours ────────────────────────────────────────────────────
     wh = user.preferences.get("work_hours", {"start": "09:00", "end": "17:00"})
@@ -303,10 +311,10 @@ async def run_scheduler(
     # ── 7. Build day-indexed free slots ───────────────────────────────────────
     # Collect all free slots across the horizon, filtered to work hours and blackout days
     all_free_slots: list[TimeSlot] = []
-    current = now.date()
-    while current <= horizon_end.date():
+    current = now_local.date()
+    while current <= horizon_end_local.date():
         if current not in blackout_dates:
-            day_slots = get_free_slots(busy_slots, current, work_start, work_end)
+            day_slots = get_free_slots(busy_slots, current, work_start, work_end, user_tz)
             # Clip to future (don't schedule in the past within today)
             clipped = [
                 TimeSlot(start=max(s.start, now), end=s.end)
@@ -383,7 +391,7 @@ async def run_scheduler(
                             free_calendar_ids=free_calendar_ids,
                         )
                         all_free_slots = _recompute_free_slots(
-                            busy_slots, now, horizon_end, blackout_dates, work_start, work_end
+                            busy_slots, now, horizon_end, blackout_dates, work_start, work_end, user_tz
                         )
                     except Exception:
                         pass
@@ -496,13 +504,14 @@ def _recompute_free_slots(
     blackout_dates: set[date],
     work_start: time,
     work_end: time,
+    tz: tzinfo = timezone.utc,
 ) -> list[TimeSlot]:
     """Recompute all free slots from scratch (used on conflict retry)."""
     all_free: list[TimeSlot] = []
-    current = now.date()
-    while current <= horizon_end.date():
+    current = now.astimezone(tz).date()
+    while current <= horizon_end.astimezone(tz).date():
         if current not in blackout_dates:
-            day_slots = get_free_slots(busy, current, work_start, work_end)
+            day_slots = get_free_slots(busy, current, work_start, work_end, tz)
             clipped = [
                 TimeSlot(start=max(s.start, now), end=s.end)
                 for s in day_slots

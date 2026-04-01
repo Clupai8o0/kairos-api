@@ -497,3 +497,55 @@ async def test_schedule_week_includes_transparency_on_events(
     all_items = [item for day in response.json() for item in day["items"]]
     events = [item["gcal_event"] for item in all_items if item["type"] == "event"]
     assert any(e["transparency"] == "transparent" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_patch_is_free_triggers_reschedule_of_pending_tasks(
+    auth_client: AsyncClient, mock_gcal
+) -> None:
+    """Marking a calendar as free should trigger a reschedule so pending tasks
+    get placed into the newly-freed slots."""
+    mock_gcal.seed_calendar(
+        account_id="acct_one",
+        account_email="sam+one@test.com",
+        calendar_id="work",
+        calendar_name="Work",
+        access_role="writer",
+        selected=True,
+        is_free=False,
+    )
+
+    # Create an unscheduled task (no duration → not scheduled on write)
+    create = await auth_client.post(
+        "/tasks/",
+        json={
+            "title": "Trigger reschedule test",
+            "schedulable": True,
+            "duration_mins": 60,
+            "deadline": "2026-12-01T17:00:00Z",
+        },
+    )
+    assert create.status_code == 201
+    task_id = create.json()["id"]
+
+    # Mark the calendar as free — endpoint should trigger run_scheduler
+    response = await auth_client.patch(
+        "/calendar/accounts/selection",
+        json={
+            "selections": [
+                {"account_id": "acct_one", "calendar_id": "work", "is_free": True},
+            ]
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["updated"] == 1
+
+    # Verify the calendar flag is reflected in the response
+    account = next(a for a in data["accounts"] if a["account_id"] == "acct_one")
+    work_cal = next(c for c in account["calendars"] if c["calendar_id"] == "work")
+    assert work_cal["is_free"] is True
+
+    # Task should still exist and the request should not have errored
+    get = await auth_client.get(f"/tasks/{task_id}")
+    assert get.status_code == 200

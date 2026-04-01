@@ -397,12 +397,19 @@ async def free_slots(
     wh = user.preferences.get("work_hours", {"start": "09:00", "end": "17:00"})
     work_start = time.fromisoformat(wh["start"])
     work_end = time.fromisoformat(wh["end"])
+    tz_name = user.preferences.get("timezone", "UTC")
+    try:
+        user_tz = ZoneInfo(tz_name)
+    except (KeyError, ZoneInfoNotFoundError):
+        user_tz = timezone.utc
+    now_local = now.astimezone(user_tz)
+    horizon_end_local = horizon_end.astimezone(user_tz)
 
     slots: list[FreeSlotResponse] = []
-    current = now.date()
-    while current <= horizon_end.date():
+    current = now_local.date()
+    while current <= horizon_end_local.date():
         if current.weekday() < 5:
-            day_slots = get_free_slots(busy, current, work_start, work_end)
+            day_slots = get_free_slots(busy, current, work_start, work_end, user_tz)
             for s in day_slots:
                 clipped_start = max(s.start, now)
                 if clipped_start < s.end:

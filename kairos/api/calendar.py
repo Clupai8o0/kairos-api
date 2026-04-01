@@ -24,6 +24,7 @@ from kairos.services.gcal_service import (
     GCalValidationError,
     GCalService,
 )
+from kairos.services.scheduler import run_scheduler
 
 router = APIRouter()
 
@@ -88,10 +89,16 @@ async def list_connected_accounts(
 @router.patch("/accounts/selection", response_model=UpdateCalendarSelectionResponse)
 async def update_calendar_selection(
     payload: UpdateCalendarSelectionRequest,
+    db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
     gcal: GCalService = Depends(get_gcal_service),
 ) -> UpdateCalendarSelectionResponse:
-    """Persist per-user calendar visibility preferences for schedule filtering."""
+    """Persist per-user calendar visibility preferences for schedule filtering.
+
+    After saving, triggers a full reschedule so tasks immediately reflect the
+    updated free/busy configuration (e.g. a calendar newly marked as free opens
+    up slots that were previously blocked).
+    """
     try:
         updated = await gcal.update_calendar_selections(
             user,
@@ -113,6 +120,14 @@ async def update_calendar_selection(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": "google_auth_required", "message": str(exc), "action": "reconnect_google"},
         ) from exc
+
+    # Reschedule all pending/scheduled tasks so they immediately benefit from the
+    # updated free/busy config. Fails open — a GCal error here doesn't block the response.
+    if updated > 0:
+        try:
+            await run_scheduler(db, gcal, user)
+        except Exception:
+            pass  # Schedule state is stale but the selection change is persisted.
 
     return UpdateCalendarSelectionResponse(updated=updated, accounts=_group_accounts(infos))
 
