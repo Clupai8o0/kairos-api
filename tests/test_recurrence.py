@@ -1,11 +1,13 @@
 """Tests for recurring task creation, listing, updates, and the recurrence horizon job."""
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from kairos.models.task import Task
+from kairos.models.task import Task, TaskStatus
 
 
 # ── RecurrenceRule schema validation ─────────────────────────────────────────
@@ -368,3 +370,253 @@ async def test_weekly_days_of_week_generates_correct_occurrences(
     for inst in instances:
         assert inst.deadline is not None
         assert inst.deadline.weekday() in (0, 2, 4)
+
+
+# ── Missed-occurrence cleanup ─────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_cleanup_missed_occurrences_endpoint(
+    auth_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """POST /schedule/recurrence/cleanup cancels PENDING instances with past deadlines."""
+    # Create a recurring task
+    r = await auth_client.post(
+        "/tasks/",
+        json={
+            "title": "Daily cleanup test",
+            "duration_mins": 30,
+            "recurrence_rule": {"freq": "daily", "end_after_count": 2},
+        },
+    )
+    template_id = r.json()["id"]
+
+    # Manually backdate one instance's deadline to yesterday so it's "missed"
+    yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+    result = await db_session.execute(
+        select(Task).where(Task.parent_task_id == template_id).limit(1)
+    )
+    instance = result.scalar_one()
+    instance.deadline = yesterday
+    instance.status = TaskStatus.PENDING
+    await db_session.flush()
+
+    instance_id = instance.id  # capture before expire_all
+
+    cleanup_r = await auth_client.post("/schedule/recurrence/cleanup")
+    assert cleanup_r.status_code == 200
+    assert cleanup_r.json()["cancelled"] == 1
+
+    # Reload and confirm status
+    db_session.expire_all()
+    reloaded = await db_session.get(Task, instance_id)
+    assert reloaded is not None
+    assert reloaded.status == TaskStatus.CANCELLED
+    assert reloaded.metadata_json.get("cancellation_reason") == "missed"
+
+
+@pytest.mark.asyncio
+async def test_cleanup_does_not_cancel_scheduled_instances(
+    auth_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Cleanup only targets PENDING missed instances, not SCHEDULED ones."""
+    r = await auth_client.post(
+        "/tasks/",
+        json={
+            "title": "Scheduled past instance",
+            "duration_mins": 30,
+            "recurrence_rule": {"freq": "daily", "end_after_count": 1},
+        },
+    )
+    template_id = r.json()["id"]
+
+    # Backdate deadline AND set status=SCHEDULED
+    yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+    result = await db_session.execute(
+        select(Task).where(Task.parent_task_id == template_id).limit(1)
+    )
+    instance = result.scalar_one()
+    instance.deadline = yesterday
+    instance.status = TaskStatus.SCHEDULED
+    await db_session.flush()
+
+    cleanup_r = await auth_client.post("/schedule/recurrence/cleanup")
+    assert cleanup_r.status_code == 200
+    assert cleanup_r.json()["cancelled"] == 0  # SCHEDULED not touched
+
+
+# ── Delete with scope ─────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_delete_instance_scope_this_skips_only_that_day(
+    auth_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """DELETE /tasks/{id}?scope=this on an instance cancels only that occurrence."""
+    r = await auth_client.post(
+        "/tasks/",
+        json={
+            "title": "Daily event",
+            "duration_mins": 30,
+            "recurrence_rule": {"freq": "daily", "end_after_count": 3},
+        },
+    )
+    template_id = r.json()["id"]
+    instances_r = await auth_client.get(f"/tasks/?parent_task_id={template_id}")
+    instance_id = instances_r.json()["tasks"][0]["id"]
+
+    del_r = await auth_client.delete(f"/tasks/{instance_id}?scope=this")
+    assert del_r.status_code == 200
+    assert del_r.json()["status"] == "cancelled"
+    assert del_r.json()["metadata"]["cancellation_reason"] == "user_skipped"
+
+    # Other instances still pending
+    remaining = await auth_client.get(f"/tasks/?parent_task_id={template_id}&status=pending")
+    assert remaining.json()["total"] == 2
+
+    # Template still active
+    tmpl_r = await auth_client.get(f"/tasks/{template_id}")
+    assert tmpl_r.json()["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_delete_instance_scope_forever_cancels_template_and_all(
+    auth_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """DELETE /tasks/{id}?scope=forever on an instance cancels template + all instances."""
+    r = await auth_client.post(
+        "/tasks/",
+        json={
+            "title": "Forever delete",
+            "duration_mins": 30,
+            "recurrence_rule": {"freq": "daily", "end_after_count": 3},
+        },
+    )
+    template_id = r.json()["id"]
+    instances_r = await auth_client.get(f"/tasks/?parent_task_id={template_id}")
+    instance_id = instances_r.json()["tasks"][0]["id"]
+
+    del_r = await auth_client.delete(f"/tasks/{instance_id}?scope=forever")
+    assert del_r.status_code == 200
+
+    # All instances cancelled
+    db_session.expire_all()
+    inst_result = await db_session.execute(
+        select(Task).where(
+            Task.parent_task_id == template_id,
+            Task.status == TaskStatus.CANCELLED,
+        )
+    )
+    assert len(inst_result.scalars().all()) == 3
+
+    # Template cancelled
+    tmpl_result = await db_session.get(Task, template_id)
+    assert tmpl_result is not None
+    assert tmpl_result.status == TaskStatus.CANCELLED
+    assert tmpl_result.metadata_json.get("cancellation_reason") == "user_deleted_forever"
+
+
+@pytest.mark.asyncio
+async def test_delete_template_scope_forever_cancels_all_instances(
+    auth_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """DELETE /tasks/{template_id}?scope=forever cancels template AND all instances."""
+    r = await auth_client.post(
+        "/tasks/",
+        json={
+            "title": "Template forever",
+            "duration_mins": 30,
+            "recurrence_rule": {"freq": "daily", "end_after_count": 2},
+        },
+    )
+    template_id = r.json()["id"]
+
+    del_r = await auth_client.delete(f"/tasks/{template_id}?scope=forever")
+    assert del_r.status_code == 200
+
+    db_session.expire_all()
+    inst_result = await db_session.execute(
+        select(Task).where(
+            Task.parent_task_id == template_id,
+            Task.status == TaskStatus.CANCELLED,
+        )
+    )
+    assert len(inst_result.scalars().all()) == 2
+
+
+@pytest.mark.asyncio
+async def test_delete_template_scope_this_cancels_only_template(
+    auth_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """DELETE /tasks/{template_id}?scope=this (default) cancels only the template."""
+    r = await auth_client.post(
+        "/tasks/",
+        json={
+            "title": "Template only",
+            "duration_mins": 30,
+            "recurrence_rule": {"freq": "daily", "end_after_count": 2},
+        },
+    )
+    template_id = r.json()["id"]
+
+    del_r = await auth_client.delete(f"/tasks/{template_id}")  # default scope=this
+    assert del_r.status_code == 200
+    assert del_r.json()["status"] == "cancelled"
+
+    # Instances still pending
+    db_session.expire_all()
+    inst_result = await db_session.execute(
+        select(Task).where(
+            Task.parent_task_id == template_id,
+            Task.status == TaskStatus.PENDING,
+        )
+    )
+    assert len(inst_result.scalars().all()) == 2
+
+
+# ── Recurring priority ────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_recurring_instance_has_higher_urgency_than_standalone(
+    auth_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Recurring instances sort ahead of same-priority standalone tasks."""
+    from kairos.services.scheduler import calculate_urgency
+    from kairos.models.task import Task as TaskModel
+
+    now = datetime.now(timezone.utc)
+
+    standalone = TaskModel(
+        id="standalone_1",
+        user_id="test_user_1",
+        title="Standalone",
+        priority=2,
+        duration_mins=30,
+        buffer_mins=15,
+        status="pending",
+        schedulable=True,
+        is_splittable=False,
+        depends_on=[],
+        metadata_json={},
+        created_at=now,
+        updated_at=now,
+    )
+    recurring = TaskModel(
+        id="recurring_1",
+        user_id="test_user_1",
+        title="Recurring instance",
+        priority=2,
+        duration_mins=30,
+        buffer_mins=15,
+        status="pending",
+        schedulable=True,
+        is_splittable=False,
+        depends_on=[],
+        metadata_json={},
+        parent_task_id="template_1",
+        recurrence_index=0,
+        created_at=now,
+        updated_at=now,
+    )
+
+    standalone_urgency = calculate_urgency(standalone, now)
+    recurring_urgency = calculate_urgency(recurring, now)
+    assert recurring_urgency > standalone_urgency

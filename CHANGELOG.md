@@ -10,7 +10,7 @@
 
 ## Current State
 
-**Last updated:** 2026-04-01
+**Last updated:** 2026-04-02
 
 **Build phase:** Frontend-ready — v1 feature-complete + frontend integration
 
@@ -36,7 +36,8 @@
 - [x] Calendar `is_free` change triggers immediate reschedule (bug fix)
 - [x] Timezone bug fix: work hours now respected in user's local timezone (not UTC)
 - [x] Recurring tasks (recurrence_rule, parent_task_id, recurrence_index — 90-day horizon, update_scope param, horizon extension endpoint)
-- [x] Tests passing (249 tests)
+- [x] Schedule windows (named reusable time ranges, full CRUD, 50-window cap, partial-update time validation)
+- [x] Tests passing (275 tests)
 
 **Known issues:**
 - `uv` not installed on this machine — used `python3.12 -m venv` + `pip` instead. README documents `uv` as the recommended approach.
@@ -79,6 +80,43 @@ TEMPLATE — Copy this block for each session:
 - Issue description
 
 -->
+
+### Session 2026-04-02 — Schedule windows
+
+**What was done:**
+- New `ScheduleWindow` SQLAlchemy model (`kairos/models/schedule_window.py`): stores
+  `id` (cuid), `user_id` (FK→users), `name` (String 100), `days_of_week` (ARRAY String),
+  `start_time` (Time), `end_time` (Time), `color` (String 20, nullable), `is_active` (Boolean, default True),
+  `created_at`, `updated_at`.
+- Added `schedule_windows` back-reference to `User` model (cascade delete-orphan).
+- Registered `ScheduleWindow` in `kairos/models/__init__.py`.
+- New Pydantic schemas (`kairos/schemas/schedule_window.py`):
+  `DayOfWeek` Literal, `ScheduleWindowCreate`, `ScheduleWindowUpdate` (all optional),
+  `ScheduleWindowResponse`, `ScheduleWindowListResponse`. Validators: end > start, no duplicate days,
+  blank-name rejected via `StringConstraints(strip_whitespace=True)`.
+- New `schedule_window_service.py`: `list_schedule_windows`, `create_schedule_window` (50-cap),
+  `get_schedule_window`, `update_schedule_window` (validates partial time updates against stored values),
+  `delete_schedule_window`.
+- New `kairos/api/schedule_windows.py` with 4 endpoints:
+  - `GET /schedule-windows/` → 200 list
+  - `POST /schedule-windows/` → 201 create (400 if > 50 windows)
+  - `PATCH /schedule-windows/{id}` → 200 partial update (422 for time-order violation, 404 if not found)
+  - `DELETE /schedule-windows/{id}` → 204 (404 if not found)
+- Registered under `/schedule-windows` prefix in `api/router.py`.
+- Alembic migration `d1e3f2a0b956_add_schedule_windows.py` — applied to local PostgreSQL.
+- 19 new tests in `tests/test_schedule_windows.py` — all passing, 275 total.
+- Also fixed a Pydantic v2 deprecation: `strip_whitespace` moved from `Field(...)` kwargs to
+  `StringConstraints(strip_whitespace=True)`.
+
+**Decisions made:**
+- Schedule windows are purely a data resource in v1. Scheduler integration (constraining tasks
+  to specific windows via `schedule_window_id` on Task) is deferred to Phase 2 per frontend spec.
+- 50-window cap is a soft guard applied at the service layer (not a DB constraint).
+- Partial PATCH of only `start_time` or only `end_time` is validated against the existing stored
+  value for the other field in the service (not at Pydantic level, since the schema only sees the patch data).
+
+**What's next:**
+- Phase 2: Add optional `schedule_window_id` FK to `Task` to constrain scheduling to a named window.
 
 ### Session 2026-04-01 — Chat session persistence API
 

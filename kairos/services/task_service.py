@@ -1,5 +1,6 @@
 """Task business logic. CRUD + scheduling trigger."""
 
+import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Literal
 
@@ -15,6 +16,8 @@ from kairos.utils.cuid import cuid
 
 if TYPE_CHECKING:
     from kairos.services.gcal_service import GCalService
+
+logger = logging.getLogger(__name__)
 
 # Fields whose change warrants a reschedule attempt
 _SCHEDULING_FIELDS = frozenset({
@@ -357,14 +360,66 @@ async def update_task(
     return loaded
 
 
-async def delete_task(db: AsyncSession, user: User, task_id: str) -> Task | None:
+async def delete_task(
+    db: AsyncSession,
+    user: User,
+    task_id: str,
+    scope: Literal["this", "forever"] = "this",
+    gcal: "GCalService | None" = None,
+) -> Task | None:
     result = await db.execute(
         select(Task).where(Task.id == task_id, Task.user_id == user.id)
     )
     task = result.scalar_one_or_none()
     if task is None:
         return None
-    task.status = TaskStatus.CANCELLED
+
+    async def _cancel(t: Task, reason: str) -> None:
+        """Cancel a task, removing its GCal event if present."""
+        if gcal and t.gcal_event_id:
+            ids_to_delete: list[str]
+            try:
+                import json as _json
+                ids_to_delete = _json.loads(t.gcal_event_id) if t.gcal_event_id.startswith("[") else [t.gcal_event_id]
+            except (ValueError, AttributeError):
+                ids_to_delete = [t.gcal_event_id]
+            for eid in ids_to_delete:
+                try:
+                    await gcal.delete_event(user, eid)
+                except Exception as exc:
+                    logger.warning("Failed to delete GCal event %s on task delete: %s", eid, exc)
+        t.status = TaskStatus.CANCELLED
+        t.gcal_event_id = None
+        t.scheduled_at = None
+        t.scheduled_end = None
+        t.metadata_json = {**(t.metadata_json or {}), "cancellation_reason": reason}
+
+    if scope == "forever":
+        # Cancel the template + all pending/scheduled instances
+        template_id = task.parent_task_id if task.parent_task_id else task.id
+        inst_result = await db.execute(
+            select(Task).where(
+                Task.parent_task_id == template_id,
+                Task.user_id == user.id,
+                Task.status.not_in([TaskStatus.DONE]),
+            )
+        )
+        for inst in inst_result.scalars().all():
+            await _cancel(inst, "user_deleted_forever")
+        if task.parent_task_id:
+            # Also cancel the template
+            tmpl_result = await db.execute(
+                select(Task).where(Task.id == template_id, Task.user_id == user.id)
+            )
+            tmpl = tmpl_result.scalar_one_or_none()
+            if tmpl:
+                await _cancel(tmpl, "user_deleted_forever")
+        await _cancel(task, "user_deleted_forever")
+    else:
+        # scope=this: cancel only this occurrence/task
+        reason = "user_skipped" if task.parent_task_id else "user_deleted"
+        await _cancel(task, reason)
+
     await db.flush()
     return await _load_task(db, user, task_id)
 

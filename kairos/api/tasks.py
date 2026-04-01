@@ -129,11 +129,31 @@ async def update_task(
 @router.delete("/{task_id}", response_model=TaskResponse)
 async def delete_task(
     task_id: str,
+    scope: Literal["this", "forever"] = Query(
+        default="this",
+        description=(
+            "For recurring tasks: 'this' cancels only this occurrence (skip for the day). "
+            "'forever' cancels the template and all future instances."
+        ),
+    ),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    gcal: GCalService = Depends(get_gcal_service),
 ) -> TaskResponse:
-    """Soft-delete a task — sets `status` to `cancelled` and removes its GCal event."""
-    task = await task_service.delete_task(db, current_user, task_id)
+    """Cancel a task.
+
+    For a **standalone task** — sets `status=cancelled` and removes its GCal event.
+
+    For a **recurring occurrence instance**:
+    - `scope=this` (default) — skips just this day's occurrence. The template and all
+      other instances continue as normal.
+    - `scope=forever` — cancels the entire recurring series (template + all pending instances).
+
+    For a **recurring template**:
+    - `scope=this` — cancels the template only (existing instances are unaffected).
+    - `scope=forever` — cancels the template and all pending/scheduled instances.
+    """
+    task = await task_service.delete_task(db, current_user, task_id, scope=scope, gcal=gcal)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return task  # type: ignore[return-value]

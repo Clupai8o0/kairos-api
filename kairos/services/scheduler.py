@@ -81,6 +81,10 @@ def calculate_urgency(task: Task, now: datetime) -> float:
     if task.duration_mins and task.duration_mins <= 30:
         score += 5
 
+    # Recurring instances always beat normal tasks — guaranteed slot if one exists
+    if task.parent_task_id is not None:
+        score += 500
+
     return score
 
 
@@ -197,6 +201,45 @@ def can_schedule(task: Task, all_tasks: dict[str, Task]) -> bool:
     return True
 
 
+def _has_capacity_on_day(
+    task: Task,
+    all_free_slots: list[TimeSlot],
+    user_tz: tzinfo,
+) -> bool:
+    """Return True if any free slot on the task's deadline day fits the task's duration."""
+    if not task.deadline or not task.duration_mins:
+        return True  # can't determine — don't auto-cancel
+    target_date = _to_utc(task.deadline).astimezone(user_tz).date()
+    required = task.duration_mins + (task.buffer_mins or 0)
+    return any(
+        slot.start.astimezone(user_tz).date() == target_date and slot.duration_mins >= required
+        for slot in all_free_slots
+    )
+
+
+async def cleanup_missed_occurrences(db: AsyncSession, user_id: str | None = None) -> int:
+    """Cancel pending recurring instances whose deadline has passed (they were missed).
+
+    Safe to call on every scheduler run. Returns the number of instances cancelled.
+    """
+    now = datetime.now(timezone.utc)
+    query = select(Task).where(
+        Task.parent_task_id.is_not(None),
+        Task.status == TaskStatus.PENDING,
+        Task.deadline < now,
+    )
+    if user_id:
+        query = query.where(Task.user_id == user_id)
+    rows = await db.execute(query)
+    missed = list(rows.scalars().all())
+    for inst in missed:
+        inst.status = TaskStatus.CANCELLED
+        inst.metadata_json = {**(inst.metadata_json or {}), "cancellation_reason": "missed"}
+    if missed:
+        await db.flush()
+    return len(missed)
+
+
 # ── DB helpers ─────────────────────────────────────────────────────────────────
 
 async def _get_blackout_dates(
@@ -250,6 +293,9 @@ async def run_scheduler(
     """
     result = ScheduleResult()
     now = datetime.now(timezone.utc)
+
+    # ── 0. Clean up missed recurring instances ────────────────────────────────
+    await cleanup_missed_occurrences(db, user_id=user.id)
 
     # ── 1. Collect tasks ───────────────────────────────────────────────────────
     query = select(Task).where(
@@ -382,8 +428,16 @@ async def run_scheduler(
                     break
 
             if slot is None:
-                result.failed += 1
-                result.details.append({"task_id": task.id, "status": "failed", "reason": "no_slot_available"})
+                # For recurring instances: if the target day has zero capacity, cancel the
+                # instance rather than leave it as failed — it simply can't fit that day.
+                if task.parent_task_id is not None and not _has_capacity_on_day(task, all_free_slots, user_tz):
+                    task.status = TaskStatus.CANCELLED
+                    task.metadata_json = {**(task.metadata_json or {}), "cancellation_reason": "no_slot_today"}
+                    result.skipped += 1
+                    result.details.append({"task_id": task.id, "status": "cancelled", "reason": "no_slot_today"})
+                else:
+                    result.failed += 1
+                    result.details.append({"task_id": task.id, "status": "failed", "reason": "no_slot_available"})
                 break
 
             # Write to GCal

@@ -41,3 +41,7 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    schedule_windows: Mapped[list["ScheduleWindow"]] = relationship(  # noqa: F821
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )

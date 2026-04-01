@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from kairos.api import auth, blackout_days, calendar, chat, events, projects, schedule, tags, tasks, views
+from kairos.api import auth, blackout_days, calendar, chat, events, projects, schedule, schedule_windows, tags, tasks, views
 
 api_router = APIRouter()
 
@@ -14,3 +14,4 @@ api_router.include_router(events.router, prefix="/events", tags=["events"])
 api_router.include_router(calendar.router, prefix="/calendar", tags=["calendar"])
 api_router.include_router(blackout_days.router, prefix="/blackout-days", tags=["blackout-days"])
 api_router.include_router(chat.router, prefix="/chat", tags=["chat"])
+api_router.include_router(schedule_windows.router, prefix="/schedule-windows", tags=["schedule-windows"])

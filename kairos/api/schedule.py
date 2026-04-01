@@ -439,3 +439,18 @@ async def extend_recurrence_horizon(
     created = await _extend(db)
     return {"created": created}
 
+
+@router.post("/recurrence/cleanup", status_code=200)
+async def cleanup_missed_recurrences(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Cancel any pending recurring instances whose deadline has passed (missed occurrences).
+
+    The scheduler calls this automatically on every run. Use this endpoint to trigger
+    a manual cleanup without running a full schedule pass.
+    """
+    from kairos.services.scheduler import cleanup_missed_occurrences
+    cancelled = await cleanup_missed_occurrences(db, user_id=user.id)
+    return {"cancelled": cancelled}
+
