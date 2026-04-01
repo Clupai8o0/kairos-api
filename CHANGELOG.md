@@ -10,7 +10,7 @@
 
 ## Current State
 
-**Last updated:** 2026-03-31
+**Last updated:** 2026-04-01
 
 **Build phase:** Frontend-ready — v1 feature-complete + frontend integration
 
@@ -31,8 +31,9 @@
 - [x] Schedule API endpoints (POST /schedule/run, GET /schedule/today, GET /schedule/week, GET /schedule/free-slots)
 - [x] Schedule-on-write (auto-schedule on task create/update)
 - [x] Blackout days (fully wired — service + routes + 11 tests)
-- [x] Tests passing (196 tests)
-- [x] OpenAPI docs reviewed
+- [x] Task splitting with 30-min default chunk size (schema validation + scheduler)
+- [x] Chat session persistence (`POST/GET/PUT/DELETE /chat/sessions` — 18 tests)
+- [x] Tests passing (233 tests)
 
 **Known issues:**
 - `uv` not installed on this machine — used `python3.12 -m venv` + `pip` instead. README documents `uv` as the recommended approach.
@@ -75,6 +76,73 @@ TEMPLATE — Copy this block for each session:
 - Issue description
 
 -->
+
+### Session 2026-04-01 — Chat session persistence API
+
+**What was done:**
+- New `ChatSession` SQLAlchemy model (`kairos/models/chat_session.py`): stores
+  `id`, `user_id`, `messages` (JSONB array), `created_at`, `updated_at`.
+- Added `chat_sessions` back-reference to `User` model (cascade delete-orphan).
+- Registered `ChatSession` in `kairos/models/__init__.py`.
+- New `ChatSessionCreate/Update/Response/Summary/ListResponse` Pydantic schemas
+  (`kairos/schemas/chat.py`). Messages validated as `{ role: user|assistant, content: str|list }`.
+  Empty-messages guard on create and update.
+- New `chat_service.py` with `create_session`, `list_sessions`, `get_session`,
+  `update_session`, `delete_session`. `list_sessions` returns newest-first. `_preview()`
+  extracts the first user message text (handles both `str` and `content_part[]`).
+- New `kairos/api/chat.py` with 5 endpoints:
+  - `POST /chat/sessions` → 201 with full session
+  - `GET /chat/sessions` → paginated list of summaries (no messages, includes preview)
+  - `GET /chat/sessions/{id}` → full session with messages
+  - `PUT /chat/sessions/{id}` → replace messages in session
+  - `DELETE /chat/sessions/{id}` → 204
+- Registered under `/chat` prefix in `api/router.py`.
+- Alembic migration `f3c2a1d9e847_add_chat_sessions.py` — applied to local PostgreSQL.
+- 18 new tests in `tests/test_chat.py` (all passing, 233 total).
+
+**Decisions made:**
+- `PUT` replaces the full messages array (no append-only endpoint in v1 — caller
+  sends the current full history). This matches the frontend BFF pattern where the
+  full conversation array is already in memory.
+- No `session_name` / `title` field — the `preview` is derived on the fly from the
+  first user message. Can be added later if needed.
+- SSE streaming for `/api/chat` is frontend-only (OpenAI SDK + ReadableStream) — no
+  backend changes required.
+
+**What's next:**
+- No immediate follow-on. Frontend can now persist and retrieve conversation history
+  via `POST /chat/sessions` on session end and `GET /chat/sessions` on load.
+
+### Session 2026-03-31 — Task splitting: 30-min default chunk size
+
+**What was done:**
+- `TaskCreate` schema: added `model_validator` that sets `min_chunk_mins=30` when
+  `is_splittable=True` and the caller omits `min_chunk_mins`.
+- `TaskCreate` and `TaskUpdate` schemas: added `field_validator` for `min_chunk_mins`
+  that rejects values below 5 minutes (returns 422).
+- `split_task()` in `scheduler.py`: removed the hard guard requiring `task.min_chunk_mins`
+  to be set — it now falls back to 30 when the field is `None`, so splittable tasks
+  with no explicit chunk size can still be split by the scheduler.
+- `run_scheduler()`: removed `and task.min_chunk_mins` condition from the split branch
+  (splitting now triggers on `task.is_splittable` alone).
+- Added 7 new tests in `test_tasks.py` covering: default 30-min chunk, explicit chunk
+  override, non-splittable tasks unaffected, `min_chunk_mins < 5` → 422, PATCH enabling
+  splitting, and end-to-end scheduled split task.
+- Updated 1 existing test in `test_scheduler.py`: the "no min_chunk returns None" case
+  now correctly reflects the new behaviour (None → uses 30-min default → succeeds with
+  enough free time), and a second assertion covers the case where only 20-min slots are
+  available (split still fails with the 30-min minimum).
+
+**Decisions made:**
+- Default minimum chunk size is 30 minutes. This is a schema-level default (applied at
+  request validation time), not a DB default — the actual stored value will be 30.
+- Minimum allowed chunk is 5 minutes (enforced by schema validator).
+- `TaskUpdate` does NOT auto-default `min_chunk_mins` when `is_splittable` changes to
+  True via PATCH — the caller must supply it explicitly (or it stays at whatever was
+  stored, which is 30 from the original create).
+
+**What's next:**
+- No immediate follow-on required. Splitting is fully functional.
 
 ### Session 2026-03-31 — Scheduler: weekend scheduling + clear old events on reschedule
 

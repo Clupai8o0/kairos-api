@@ -8,6 +8,7 @@ from kairos.models.blackout_day import BlackoutDay
 from kairos.models.schedule_log import ScheduleLog
 from kairos.models.google_account import GoogleAccount
 from kairos.models.google_calendar import GoogleCalendar
+from kairos.models.chat_session import ChatSession
 
 __all__ = [
     "Base",
@@ -24,4 +25,5 @@ __all__ = [
     "ScheduleLog",
     "GoogleAccount",
     "GoogleCalendar",
+    "ChatSession",
 ]

@@ -1,8 +1,11 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from kairos.schemas.tag import TagResponse
+
+_DEFAULT_MIN_CHUNK_MINS = 30
+_MINIMUM_CHUNK_MINS = 5
 
 
 class TaskCreate(BaseModel):
@@ -34,6 +37,19 @@ class TaskCreate(BaseModel):
             raise ValueError("duration_mins must be a positive integer")
         return v
 
+    @field_validator("min_chunk_mins")
+    @classmethod
+    def validate_min_chunk_mins(cls, v: int | None) -> int | None:
+        if v is not None and v < _MINIMUM_CHUNK_MINS:
+            raise ValueError(f"min_chunk_mins must be at least {_MINIMUM_CHUNK_MINS}")
+        return v
+
+    @model_validator(mode="after")
+    def apply_splittable_defaults(self) -> "TaskCreate":
+        if self.is_splittable and self.min_chunk_mins is None:
+            self.min_chunk_mins = _DEFAULT_MIN_CHUNK_MINS
+        return self
+
 
 class TaskUpdate(BaseModel):
     title: str | None = None
@@ -63,6 +79,13 @@ class TaskUpdate(BaseModel):
     def validate_duration(cls, v: int | None) -> int | None:
         if v is not None and v <= 0:
             raise ValueError("duration_mins must be a positive integer")
+        return v
+
+    @field_validator("min_chunk_mins")
+    @classmethod
+    def validate_min_chunk_mins(cls, v: int | None) -> int | None:
+        if v is not None and v < _MINIMUM_CHUNK_MINS:
+            raise ValueError(f"min_chunk_mins must be at least {_MINIMUM_CHUNK_MINS}")
         return v
 
 

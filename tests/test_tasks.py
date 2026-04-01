@@ -470,3 +470,109 @@ async def test_depends_on_nonexistent_task(auth_client: AsyncClient) -> None:
     )
     assert response.status_code == 201
     assert "fake_dep_id" in response.json()["depends_on"]
+
+
+# ── Task Splitting ────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_create_splittable_task_defaults_min_chunk_to_30(
+    auth_client: AsyncClient,
+) -> None:
+    """When is_splittable=True and min_chunk_mins is omitted, it defaults to 30."""
+    response = await auth_client.post(
+        "/tasks/",
+        json={"title": "Big splittable task", "is_splittable": True, "duration_mins": 120},
+    )
+    assert response.status_code == 201
+    data = response.json()
+    assert data["is_splittable"] is True
+    assert data["min_chunk_mins"] == 30
+
+
+@pytest.mark.asyncio
+async def test_create_splittable_task_with_explicit_min_chunk(
+    auth_client: AsyncClient,
+) -> None:
+    """An explicit min_chunk_mins overrides the 30-min default."""
+    response = await auth_client.post(
+        "/tasks/",
+        json={
+            "title": "Custom chunk task",
+            "is_splittable": True,
+            "duration_mins": 180,
+            "min_chunk_mins": 45,
+        },
+    )
+    assert response.status_code == 201
+    data = response.json()
+    assert data["is_splittable"] is True
+    assert data["min_chunk_mins"] == 45
+
+
+@pytest.mark.asyncio
+async def test_create_non_splittable_task_min_chunk_stays_none(
+    auth_client: AsyncClient,
+) -> None:
+    """When is_splittable=False, min_chunk_mins should not be auto-populated."""
+    response = await auth_client.post(
+        "/tasks/",
+        json={"title": "Not splittable", "is_splittable": False, "duration_mins": 120},
+    )
+    assert response.status_code == 201
+    data = response.json()
+    assert data["is_splittable"] is False
+    assert data["min_chunk_mins"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_task_min_chunk_below_5_returns_422(
+    auth_client: AsyncClient,
+) -> None:
+    """min_chunk_mins must be at least 5 minutes."""
+    response = await auth_client.post(
+        "/tasks/",
+        json={"title": "Too small chunks", "is_splittable": True, "min_chunk_mins": 3},
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_update_task_enable_splitting_defaults_min_chunk(
+    auth_client: AsyncClient,
+) -> None:
+    """Enabling is_splittable via PATCH should not auto-set min_chunk_mins (caller provides it)."""
+    create = await auth_client.post(
+        "/tasks/", json={"title": "Patch splittable", "duration_mins": 90}
+    )
+    task_id = create.json()["id"]
+
+    response = await auth_client.patch(
+        f"/tasks/{task_id}", json={"is_splittable": True, "min_chunk_mins": 30}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["is_splittable"] is True
+    assert data["min_chunk_mins"] == 30
+
+
+@pytest.mark.asyncio
+async def test_splittable_task_gets_scheduled_across_chunks(
+    auth_client: AsyncClient,
+) -> None:
+    """A splittable task with a large duration gets scheduled (gcal_event_id is set)."""
+    response = await auth_client.post(
+        "/tasks/",
+        json={
+            "title": "Deep work session",
+            "is_splittable": True,
+            "duration_mins": 120,
+            "schedulable": True,
+            "deadline": "2026-12-01T17:00:00Z",
+        },
+    )
+    assert response.status_code == 201
+    data = response.json()
+    assert data["is_splittable"] is True
+    assert data["min_chunk_mins"] == 30
+    # The mock GCal always has lots of free time, so the task should be scheduled
+    assert data["gcal_event_id"] is not None

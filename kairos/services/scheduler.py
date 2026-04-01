@@ -157,8 +157,10 @@ def split_task(
     free_slots: list[TimeSlot],
 ) -> list[TimeSlot] | None:
     """Split a splittable task across multiple free slots. Returns chunks or None."""
-    if not task.duration_mins or not task.min_chunk_mins:
+    if not task.duration_mins:
         return None
+
+    min_chunk = task.min_chunk_mins if task.min_chunk_mins is not None else 30
 
     remaining_mins = task.duration_mins
     chunks: list[TimeSlot] = []
@@ -168,7 +170,7 @@ def split_task(
             break
 
         available = min(slot.duration_mins - task.buffer_mins, remaining_mins)
-        if available >= task.min_chunk_mins:
+        if available >= min_chunk:
             chunks.append(
                 TimeSlot(
                     start=slot.start,
@@ -345,7 +347,7 @@ async def run_scheduler(
         for attempt in range(3):
             slot = find_best_slot(task, all_free_slots)
 
-            if slot is None and task.is_splittable and task.min_chunk_mins:
+            if slot is None and task.is_splittable:
                 chunks = split_task(task, all_free_slots)
                 if chunks:
                     scheduled = await _schedule_split_task(

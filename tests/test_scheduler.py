@@ -185,8 +185,19 @@ def test_split_task_returns_none_when_not_enough_slots() -> None:
     assert split_task(task, free) is None
 
 
-def test_split_task_returns_none_when_no_min_chunk():
+def test_split_task_returns_none_when_no_min_chunk_uses_default_30():
+    """When min_chunk_mins is None, split_task defaults to 30-minute chunks."""
     free = [TimeSlot(start=utc(2026, 4, 1, 9, 0), end=utc(2026, 4, 1, 17, 0))]
+    task = make_task(duration_mins=120, buffer_mins=0, min_chunk_mins=None, is_splittable=True)
+    chunks = split_task(task, free)
+    assert chunks is not None
+    total = sum((c.end - c.start).total_seconds() / 60 for c in chunks)
+    assert total == 120.0
+
+
+def test_split_task_default_chunk_respects_30_min_minimum():
+    """With min_chunk_mins=None and only 20-min slots available, splitting fails."""
+    free = [TimeSlot(start=utc(2026, 4, 1, 9, 0), end=utc(2026, 4, 1, 9, 20))]
     task = make_task(duration_mins=120, buffer_mins=0, min_chunk_mins=None, is_splittable=True)
     assert split_task(task, free) is None
 
