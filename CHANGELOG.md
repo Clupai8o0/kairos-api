@@ -37,7 +37,8 @@
 - [x] Timezone bug fix: work hours now respected in user's local timezone (not UTC)
 - [x] Recurring tasks (recurrence_rule, parent_task_id, recurrence_index — 90-day horizon, update_scope param, horizon extension endpoint)
 - [x] Schedule windows (named reusable time ranges, full CRUD, 50-window cap, partial-update time validation)
-- [x] Tests passing (275 tests)
+- [x] `GET /auth/preferences` and `PATCH /auth/preferences` — work_hours, timezone, horizon, buffer (7 new tests)
+- [x] Tests passing (282 tests)
 
 **Known issues:**
 - `uv` not installed on this machine — used `python3.12 -m venv` + `pip` instead. README documents `uv` as the recommended approach.

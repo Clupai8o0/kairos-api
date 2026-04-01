@@ -180,6 +180,91 @@ async def test_google_callback_state_mismatch_returns_400(
     assert "Invalid OAuth state" in response.json()["detail"]
 
 
+# ── Preferences ──────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_preferences_returns_defaults(auth_client: AsyncClient) -> None:
+    """GET /auth/preferences returns the user's current preferences."""
+    r = await auth_client.get("/auth/preferences")
+    assert r.status_code == 200
+    data = r.json()
+    assert "work_hours" in data
+    assert "start" in data["work_hours"]
+    assert "end" in data["work_hours"]
+    assert "timezone" in data
+    assert "scheduling_horizon_days" in data
+    assert "buffer_mins" in data
+    assert "default_duration_mins" in data
+
+
+@pytest.mark.asyncio
+async def test_patch_preferences_work_hours(auth_client: AsyncClient) -> None:
+    """PATCH /auth/preferences updates work_hours and returns the new value."""
+    r = await auth_client.patch(
+        "/auth/preferences",
+        json={"work_hours": {"start": "08:00", "end": "22:00"}},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["work_hours"]["start"] == "08:00"
+    assert data["work_hours"]["end"] == "22:00"
+
+
+@pytest.mark.asyncio
+async def test_patch_preferences_persists(auth_client: AsyncClient) -> None:
+    """Preference changes are persisted and visible on subsequent GET."""
+    await auth_client.patch("/auth/preferences", json={"buffer_mins": 5})
+    r = await auth_client.get("/auth/preferences")
+    assert r.status_code == 200
+    assert r.json()["buffer_mins"] == 5
+
+
+@pytest.mark.asyncio
+async def test_patch_preferences_partial_update(auth_client: AsyncClient) -> None:
+    """PATCH only modifies the provided fields; others are unchanged."""
+    # Set a known baseline
+    await auth_client.patch(
+        "/auth/preferences",
+        json={"work_hours": {"start": "09:00", "end": "17:00"}, "buffer_mins": 20},
+    )
+    # Update only timezone
+    await auth_client.patch("/auth/preferences", json={"timezone": "Australia/Melbourne"})
+    r = await auth_client.get("/auth/preferences")
+    data = r.json()
+    # Other fields unchanged
+    assert data["work_hours"]["start"] == "09:00"
+    assert data["buffer_mins"] == 20
+    assert data["timezone"] == "Australia/Melbourne"
+
+
+@pytest.mark.asyncio
+async def test_patch_preferences_invalid_time_format(auth_client: AsyncClient) -> None:
+    """Bad time format in work_hours → 422."""
+    r = await auth_client.patch(
+        "/auth/preferences",
+        json={"work_hours": {"start": "8am", "end": "22:00"}},
+    )
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_patch_preferences_invalid_timezone(auth_client: AsyncClient) -> None:
+    """Unknown timezone → 422."""
+    r = await auth_client.patch(
+        "/auth/preferences",
+        json={"timezone": "Mars/Olympus_Mons"},
+    )
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_preferences_unauthed_returns_401(unauthed_client: AsyncClient) -> None:
+    """GET and PATCH /auth/preferences without auth → 401."""
+    assert (await unauthed_client.get("/auth/preferences")).status_code == 401
+    assert (await unauthed_client.patch("/auth/preferences", json={})).status_code == 401
+
+
 @pytest.mark.asyncio
 async def test_valid_jwt_authenticates(
     unauthed_client: AsyncClient, db_session, test_user

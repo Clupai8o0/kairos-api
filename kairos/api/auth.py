@@ -12,7 +12,7 @@ from kairos.core.auth import get_current_user
 from kairos.core.config import settings
 from kairos.core.deps import get_db
 from kairos.models.user import User
-from kairos.schemas.auth import ApiKeyResponse, UserResponse
+from kairos.schemas.auth import ApiKeyResponse, PreferencesResponse, PreferencesUpdate, UserResponse
 from kairos.services.auth_service import (
     create_access_token,
     decode_access_token,
@@ -247,3 +247,81 @@ async def get_me(
 ) -> UserResponse:
     """Return the currently authenticated user's profile."""
     return UserResponse.model_validate(current_user)
+
+
+@router.get("/preferences", response_model=PreferencesResponse)
+async def get_preferences(
+    current_user: User = Depends(get_current_user),
+) -> PreferencesResponse:
+    """Return the current user's scheduling preferences.
+
+    All values written here are used by the scheduling engine:
+    - `work_hours` — slots outside this window are never offered
+    - `timezone` — IANA timezone the work_hours are interpreted in (e.g. `"Australia/Melbourne"`)
+    - `scheduling_horizon_days` — how many days ahead the scheduler looks (default 14)
+    - `buffer_mins` — default buffer added after each scheduled task
+    - `default_duration_mins` — duration used when a task has no explicit duration
+    """
+    p = current_user.preferences
+    return PreferencesResponse(
+        work_hours=p.get("work_hours", {"start": "09:00", "end": "17:00"}),
+        timezone=p.get("timezone", "UTC"),
+        scheduling_horizon_days=p.get("scheduling_horizon_days", 14),
+        buffer_mins=p.get("buffer_mins", 15),
+        default_duration_mins=p.get("default_duration_mins", 60),
+    )
+
+
+@router.patch("/preferences", response_model=PreferencesResponse)
+async def update_preferences(
+    payload: PreferencesUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> PreferencesResponse:
+    """Update the current user's scheduling preferences.
+
+    Send only the fields you want to change. All fields are optional.
+    Changes take effect on the next scheduler run — run `POST /schedule/run`
+    immediately after if you want tasks rescheduled into the new work window.
+
+    `work_hours.start` and `work_hours.end` must be `HH:MM` in 24-hour format.
+    They are interpreted in the user's `timezone`.
+    """
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    from sqlalchemy import inspect as sa_inspect
+
+    if payload.timezone is not None:
+        try:
+            ZoneInfo(payload.timezone)
+        except (KeyError, ZoneInfoNotFoundError):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={"code": "invalid_timezone", "message": f"Unknown timezone: {payload.timezone}"},
+            )
+
+    p = dict(current_user.preferences)
+    if payload.work_hours is not None:
+        p["work_hours"] = payload.work_hours.model_dump()
+    if payload.timezone is not None:
+        p["timezone"] = payload.timezone
+    if payload.scheduling_horizon_days is not None:
+        p["scheduling_horizon_days"] = payload.scheduling_horizon_days
+    if payload.buffer_mins is not None:
+        p["buffer_mins"] = payload.buffer_mins
+    if payload.default_duration_mins is not None:
+        p["default_duration_mins"] = payload.default_duration_mins
+
+    current_user.preferences = p
+    # Force SQLAlchemy to see the JSONB mutation
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(current_user, "preferences")
+    await db.flush()
+
+    return PreferencesResponse(
+        work_hours=p.get("work_hours", {"start": "09:00", "end": "17:00"}),
+        timezone=p.get("timezone", "UTC"),
+        scheduling_horizon_days=p.get("scheduling_horizon_days", 14),
+        buffer_mins=p.get("buffer_mins", 15),
+        default_duration_mins=p.get("default_duration_mins", 60),
+    )
