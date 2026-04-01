@@ -10,7 +10,7 @@
 
 ## Current State
 
-**Last updated:** 2026-04-02
+**Last updated:** 2026-04-08
 
 **Build phase:** Frontend-ready — v1 feature-complete + frontend integration
 
@@ -35,10 +35,10 @@
 - [x] Chat session persistence (`POST/GET/PUT/DELETE /chat/sessions` — 18 tests)
 - [x] Calendar `is_free` change triggers immediate reschedule (bug fix)
 - [x] Timezone bug fix: work hours now respected in user's local timezone (not UTC)
-- [x] Recurring tasks (recurrence_rule, parent_task_id, recurrence_index — 90-day horizon, update_scope param, horizon extension endpoint)
+- [x] Recurring tasks — single-task model: one DB row per recurring task, one GCal event per occurrence constrained to its own day (18 tests)
 - [x] Schedule windows (named reusable time ranges, full CRUD, 50-window cap, partial-update time validation)
 - [x] `GET /auth/preferences` and `PATCH /auth/preferences` — work_hours, timezone, horizon, buffer (7 new tests)
-- [x] Tests passing (282 tests)
+- [x] Tests passing (278 tests)
 
 **Known issues:**
 - `uv` not installed on this machine — used `python3.12 -m venv` + `pip` instead. README documents `uv` as the recommended approach.
@@ -81,6 +81,45 @@ TEMPLATE — Copy this block for each session:
 - Issue description
 
 -->
+
+### Session 2026-04-08 — Recurring tasks rewritten (single-task model)
+
+**What was done:**
+- **Root cause diagnosed**: old model spawned a DB `Task` row per occurrence in a 90-day horizon.
+  Scheduler's `find_best_slot` used `deadline` only as a max cutoff, not a day constraint, so all
+  90 instances competed for today's earliest slots — causing N occurrences to pile up on one day.
+- **New model**: One DB `Task` row per recurring task (the "template"). Scheduler creates one GCal
+  event per upcoming occurrence, each event constrained to its own calendar day.
+- `kairos/services/scheduler.py`:
+  - Removed `_has_capacity_on_day()`, `cleanup_missed_occurrences()`, instance query (`parent_task_id IS NOT NULL`).
+  - Removed `+500 urgency` bonus for `parent_task_id` tasks.
+  - Moved `_occurrence_dates()` here from `task_service.py`.
+  - Added `_schedule_recurring_task()`: parses rule → generates occurrence dates →
+    filters `all_free_slots` to each `occ_date` only → `find_best_slot` → `gcal.create_event` →
+    stores JSON array of event IDs in `task.gcal_event_id`; sets `scheduled_at` = earliest start.
+- `kairos/services/task_service.py`:
+  - Removed `_spawn_occurrences()`, `extend_recurrence_horizon()`, `_RECURRENCE_HORIZON_DAYS`.
+  - Removed `_occurrence_dates()` (moved to scheduler).
+  - Added `"recurrence_rule"` to `_SCHEDULING_FIELDS` so rule changes trigger reschedule.
+  - `create_task()`: no longer spawns instances; recurring tasks also schedule-on-write.
+  - `update_task()`: when `recurrence_rule` changes, deletes old GCal events and resets scheduling
+    fields (triggers full reschedule); removed all instance-propagation and `update_scope` branching.
+  - `delete_task()`: `scope="forever"` cancels template only (no cascade needed).
+- `kairos/api/schedule.py`: `/schedule/recurrence/extend` and `/schedule/recurrence/cleanup` are
+  now no-ops returning `{"created": 0}` and `{"cancelled": 0}`.
+- `tests/test_recurrence.py`: completely rewritten — 18 tests for single-task model.
+- Resolved 5 test failures (mock ID reuse, `expire_all()` + lazy-load patterns on `task.id` and `user.preferences`).
+
+**Decisions made:**
+- `parent_task_id` and `recurrence_index` columns left on Task model (no migration needed; always `null` for new tasks).
+- `gcal_event_id` stores a JSON array string for recurring tasks, a plain event-ID string for non-recurring.
+- `update_scope` parameter still accepted by `update_task()` but has no branching behavior; kept for API compatibility.
+- `/recurrence/extend` and `/recurrence/cleanup` kept as no-ops rather than removed, for backwards compatibility.
+
+**What's next:**
+- Frontend should not query `?parent_task_id=xxx` (always returns 0 results now).
+- Frontend should `JSON.parse(task.gcal_event_id)` for recurring tasks when displaying event IDs.
+- `PATCH /tasks/{id}` with `{"recurrence_rule": null}` stops recurrence; task becomes standalone.
 
 ### Session 2026-04-02 — Schedule windows
 

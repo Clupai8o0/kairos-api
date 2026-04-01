@@ -452,3 +452,62 @@ async def test_run_scheduler_higher_priority_scheduled_first(
     await db_session.refresh(low_p)
     # High priority task should be scheduled before (earlier time than) low priority
     assert high_p.scheduled_at <= low_p.scheduled_at
+
+
+@pytest.mark.asyncio
+async def test_run_scheduler_reschedule_does_not_drift_slot(
+    db_session: AsyncSession, test_user: User
+) -> None:
+    """Regression: running the scheduler twice must not push a task forward.
+
+    When a task is already scheduled at 9-10am, the free/busy query returns
+    that window as busy (it's the existing GCal event). The scheduler must
+    restore that window before finding a new slot — otherwise the task drifts
+    to 10am on run 2 and back to 9am on run 3.
+    """
+    gcal = MockGCalService()
+    now = datetime.now(timezone.utc)
+
+    # Simulate a task already scheduled at tomorrow 9-10am UTC
+    tomorrow = (now + timedelta(days=1)).date()
+    sched_start = datetime.combine(tomorrow, time(9, 0), tzinfo=timezone.utc)
+    sched_end = datetime.combine(tomorrow, time(10, 0), tzinfo=timezone.utc)
+
+    existing_event_id = "existing_evt_0"
+    # Pre-populate the mock as if GCal already has this event
+    gcal.events[existing_event_id] = {
+        "summary": "Already scheduled",
+        "start": sched_start,
+        "end": sched_end,
+    }
+    # free/busy returns the existing event's window as busy (real GCal behaviour)
+    gcal.add_busy_slot(start=sched_start, end=sched_end)
+
+    task = Task(
+        id="drift_task",
+        user_id=test_user.id,
+        title="Already scheduled",
+        duration_mins=60,
+        priority=3,
+        status=TaskStatus.SCHEDULED,
+        schedulable=True,
+        buffer_mins=0,
+        is_splittable=False,
+        depends_on=[],
+        created_at=utc(2026, 1, 1),
+        gcal_event_id=existing_event_id,
+        scheduled_at=sched_start,
+        scheduled_end=sched_end,
+        metadata_json={},
+    )
+    db_session.add(task)
+    await db_session.commit()
+
+    result = await run_scheduler(db_session, gcal, test_user)
+
+    assert result.scheduled == 1
+    await db_session.refresh(task)
+    # Must land back at the same 9am start, not drift later
+    assert task.scheduled_at is not None
+    assert task.scheduled_at.hour == 9
+    assert task.scheduled_at.minute == 0

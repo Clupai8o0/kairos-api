@@ -1,7 +1,7 @@
 """Task business logic. CRUD + scheduling trigger."""
 
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy import and_, func, or_, select
@@ -11,7 +11,7 @@ from sqlalchemy.orm import selectinload
 from kairos.models.tag import Tag, task_tags
 from kairos.models.task import Task, TaskStatus
 from kairos.models.user import User
-from kairos.schemas.task import RecurrenceRule, TaskCreate, TaskUpdate
+from kairos.schemas.task import TaskCreate, TaskUpdate
 from kairos.utils.cuid import cuid
 
 if TYPE_CHECKING:
@@ -28,107 +28,8 @@ _SCHEDULING_FIELDS = frozenset({
     "is_splittable",
     "min_chunk_mins",
     "buffer_mins",
+    "recurrence_rule",
 })
-
-# How far ahead to pre-generate occurrence instances
-_RECURRENCE_HORIZON_DAYS = 90
-
-
-def _occurrence_dates(rule: RecurrenceRule, from_date: date, until: date, count_offset: int = 0) -> list[date]:
-    """Return occurrence dates starting at from_date up to (not exceeding) until.
-
-    count_offset: number of occurrences already generated (used for end_after_count enforcement).
-    """
-    results: list[date] = []
-    current = from_date
-    count = count_offset
-
-    while current <= until:
-        if rule.end_date and current > rule.end_date:
-            break
-        if rule.end_after_count is not None and count >= rule.end_after_count:
-            break
-
-        # For weekly with days_of_week, only include matching weekdays
-        if rule.freq == "weekly" and rule.days_of_week:
-            dow_map = {"MON": 0, "TUE": 1, "WED": 2, "THU": 3, "FRI": 4, "SAT": 5, "SUN": 6}
-            if current.weekday() in {dow_map[d] for d in rule.days_of_week if d in dow_map}:
-                results.append(current)
-                count += 1
-            current += timedelta(days=1)
-            continue
-
-        results.append(current)
-        count += 1
-
-        if rule.freq == "daily":
-            current += timedelta(days=rule.interval)
-        elif rule.freq == "weekly":
-            current += timedelta(weeks=rule.interval)
-        elif rule.freq == "monthly":
-            # Advance by N months
-            month = current.month - 1 + rule.interval
-            year = current.year + month // 12
-            month = month % 12 + 1
-            day = min(current.day, [31, 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1])
-            current = current.replace(year=year, month=month, day=day)
-        elif rule.freq == "yearly":
-            try:
-                current = current.replace(year=current.year + rule.interval)
-            except ValueError:
-                # Feb 29 in non-leap year → Feb 28
-                current = current.replace(year=current.year + rule.interval, day=28)
-
-    return results
-
-
-async def _spawn_occurrences(
-    db: AsyncSession,
-    template: Task,
-    rule: RecurrenceRule,
-    tags: list[Tag],
-    starting_index: int = 0,
-    from_date: date | None = None,
-    count_offset: int = 0,
-) -> int:
-    """Generate occurrence instances for a recurring template within the 90-day horizon.
-
-    Returns the number of new instances created.
-    """
-    today = datetime.now(timezone.utc).date()
-    start = from_date or today
-    horizon = today + timedelta(days=_RECURRENCE_HORIZON_DAYS)
-
-    occurrence_dates = _occurrence_dates(rule, start, horizon, count_offset=count_offset)
-    created = 0
-
-    for idx, occ_date in enumerate(occurrence_dates, start=starting_index):
-        # Build a deadline at end-of-day in UTC for the occurrence date
-        occ_deadline = datetime(occ_date.year, occ_date.month, occ_date.day, 23, 59, 59, tzinfo=timezone.utc)
-        instance = Task(
-            id=cuid(),
-            user_id=template.user_id,
-            project_id=template.project_id,
-            title=template.title,
-            description=template.description,
-            duration_mins=template.duration_mins,
-            deadline=occ_deadline,
-            priority=template.priority,
-            schedulable=template.schedulable,
-            is_splittable=template.is_splittable,
-            min_chunk_mins=template.min_chunk_mins,
-            depends_on=[],
-            buffer_mins=template.buffer_mins,
-            metadata_json=dict(template.metadata_json),
-            # No recurrence_rule on instances
-            parent_task_id=template.id,
-            recurrence_index=idx,
-        )
-        instance.tags = list(tags)
-        db.add(instance)
-        created += 1
-
-    return created
 
 
 async def create_task(
@@ -164,16 +65,11 @@ async def create_task(
     db.add(task)
     await db.flush()
 
-    # Pre-generate occurrence instances for recurring tasks
-    if data.recurrence_rule:
-        await _spawn_occurrences(db, task, data.recurrence_rule, resolved_tags)
-        await db.flush()
-
     loaded = await _load_task(db, user, task.id)  # type: ignore[arg-type]
 
-    # Schedule-on-write: only schedule the template itself when non-recurring,
-    # or skip — instances are scheduled by the batch scheduler run.
-    if gcal and loaded and loaded.schedulable and loaded.duration_mins and not data.recurrence_rule:
+    # Schedule-on-write: recurring tasks are scheduled by the engine the same as
+    # standalone tasks (one GCal event per occurrence, no child DB rows).
+    if gcal and loaded and loaded.schedulable and loaded.duration_mins:
         from kairos.services.scheduler import schedule_single_task
         await schedule_single_task(db, gcal, user, loaded)
         loaded = await _load_task(db, user, task.id)  # type: ignore[arg-type]
@@ -294,59 +190,30 @@ async def update_task(
         )
         task.tags = list(tag_result.scalars().all())
 
-    # ── Recurrence rule change on a template ──────────────────────────────────
+    # ── Recurrence rule change ────────────────────────────────────────────────
+    # Changing the rule (or clearing it) resets all GCal events so the scheduler
+    # can create fresh events for the new pattern.
     if new_rr_raw is not ...:
-        new_rr_obj: RecurrenceRule | None = data.recurrence_rule
-        new_rr_dict = new_rr_obj.model_dump(mode="json") if new_rr_obj else None
+        new_rr_dict = data.recurrence_rule.model_dump(mode="json") if data.recurrence_rule else None
         task.recurrence_rule = new_rr_dict
 
-        is_template = task.parent_task_id is None
-        if is_template and update_scope in ("all", "this_and_future"):
-            # Delete future instances and regenerate from today
-            today = datetime.now(timezone.utc).date()
-            existing = await db.execute(
-                select(Task).where(
-                    Task.parent_task_id == task.id,
-                    Task.user_id == user.id,
-                    Task.status.not_in([TaskStatus.DONE, TaskStatus.CANCELLED]),
-                )
-            )
-            for inst in existing.scalars().all():
-                await db.delete(inst)
-            if new_rr_obj:
-                await db.flush()
-                tag_result2 = await db.execute(
-                    select(Tag).where(Tag.id.in_([t.id for t in task.tags]), Tag.user_id == user.id)
-                )
-                await _spawn_occurrences(db, task, new_rr_obj, list(tag_result2.scalars().all()), from_date=today)
-
-    # ── Detach occurrence instance when updated with scope=this ───────────────
-    elif task.parent_task_id is not None and update_scope == "this":
-        # Non-recurrence fields updated on an instance → detach it to standalone
-        task.parent_task_id = None
-        task.recurrence_index = None
-
-    elif task.parent_task_id is None and task.recurrence_rule and update_scope in ("all", "this_and_future"):
-        # Updating fields on template — propagate to future pending instances
-        propagate_fields = {k: v for k, v in update_data.items() if k not in ("status",)}
-        if propagate_fields or tag_ids is not None or metadata is not None:
-            today = datetime.now(timezone.utc).date()
-            inst_result = await db.execute(
-                select(Task)
-                .where(
-                    Task.parent_task_id == task.id,
-                    Task.user_id == user.id,
-                    Task.status.not_in([TaskStatus.DONE, TaskStatus.CANCELLED]),
-                )
-                .options(selectinload(Task.tags))
-            )
-            for inst in inst_result.scalars().all():
-                for field, value in propagate_fields.items():
-                    setattr(inst, field, value)
-                if metadata is not None:
-                    inst.metadata_json = metadata
-                if tag_ids is not None:
-                    inst.tags = list(task.tags)
+        # Remove stale GCal events — scheduler will recreate on next run
+        if gcal and task.gcal_event_id:
+            import json as _json
+            try:
+                ids_to_delete = _json.loads(task.gcal_event_id) if task.gcal_event_id.startswith("[") else [task.gcal_event_id]
+            except (ValueError, AttributeError):
+                ids_to_delete = [task.gcal_event_id]
+            for eid in ids_to_delete:
+                try:
+                    await gcal.delete_event(user, eid)
+                except Exception as exc:
+                    logger.warning("Failed to delete GCal event %s on recurrence change: %s", eid, exc)
+        task.gcal_event_id = None
+        task.scheduled_at = None
+        task.scheduled_end = None
+        task.status = TaskStatus.PENDING
+        scheduling_changed = True  # always reschedule when rule changes
 
     await db.flush()
     loaded = await _load_task(db, user, task_id)
@@ -395,30 +262,10 @@ async def delete_task(
         t.metadata_json = {**(t.metadata_json or {}), "cancellation_reason": reason}
 
     if scope == "forever":
-        # Cancel the template + all pending/scheduled instances
-        template_id = task.parent_task_id if task.parent_task_id else task.id
-        inst_result = await db.execute(
-            select(Task).where(
-                Task.parent_task_id == template_id,
-                Task.user_id == user.id,
-                Task.status.not_in([TaskStatus.DONE]),
-            )
-        )
-        for inst in inst_result.scalars().all():
-            await _cancel(inst, "user_deleted_forever")
-        if task.parent_task_id:
-            # Also cancel the template
-            tmpl_result = await db.execute(
-                select(Task).where(Task.id == template_id, Task.user_id == user.id)
-            )
-            tmpl = tmpl_result.scalar_one_or_none()
-            if tmpl:
-                await _cancel(tmpl, "user_deleted_forever")
+        # Cancel task and all its GCal events (gcal_event_id may be a JSON array for recurring)
         await _cancel(task, "user_deleted_forever")
     else:
-        # scope=this: cancel only this occurrence/task
-        reason = "user_skipped" if task.parent_task_id else "user_deleted"
-        await _cancel(task, reason)
+        await _cancel(task, "user_deleted")
 
     await db.flush()
     return await _load_task(db, user, task_id)
@@ -460,67 +307,3 @@ async def _load_task(db: AsyncSession, user: User, task_id: str) -> Task | None:
         .options(selectinload(Task.tags))
     )
     return result.scalar_one_or_none()
-
-
-async def extend_recurrence_horizon(db: AsyncSession) -> int:
-    """Extend occurrence instances for all active recurring templates up to the 90-day horizon.
-
-    Designed to be called by a daily background job. Returns the total number of
-    new instances created across all users.
-    """
-    today = datetime.now(timezone.utc).date()
-    horizon = today + timedelta(days=_RECURRENCE_HORIZON_DAYS)
-    total_created = 0
-
-    # Find all recurring templates (parent_task_id IS NULL, recurrence_rule IS NOT NULL)
-    templates_result = await db.execute(
-        select(Task)
-        .where(
-            Task.parent_task_id.is_(None),
-            Task.recurrence_rule.is_not(None),
-            Task.status.not_in([TaskStatus.DONE, TaskStatus.CANCELLED]),
-        )
-        .options(selectinload(Task.tags))
-    )
-    templates = list(templates_result.scalars().all())
-
-    for template in templates:
-        try:
-            rule = RecurrenceRule.model_validate(template.recurrence_rule)
-        except Exception:
-            continue  # Bad data — skip silently
-
-        # Find the latest existing instance date to avoid duplicates
-        latest_result = await db.execute(
-            select(Task.deadline)
-            .where(Task.parent_task_id == template.id)
-            .order_by(Task.deadline.desc())
-            .limit(1)
-        )
-        latest_row = latest_result.scalar_one_or_none()
-        if latest_row:
-            # Start generating from the day after the latest instance
-            latest_date = latest_row.date() if hasattr(latest_row, "date") else latest_row
-            from_date = latest_date + timedelta(days=1)
-        else:
-            from_date = today
-
-        if from_date > horizon:
-            continue  # Already covered
-
-        # Determine next recurrence_index
-        count_result = await db.execute(
-            select(func.count(Task.id)).where(Task.parent_task_id == template.id)
-        )
-        existing_count = count_result.scalar_one()
-
-        created = await _spawn_occurrences(
-            db, template, rule, list(template.tags),
-            starting_index=existing_count,
-            from_date=from_date,
-            count_offset=existing_count,
-        )
-        total_created += created
-
-    await db.flush()
-    return total_created

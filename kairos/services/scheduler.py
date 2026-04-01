@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from typing import TYPE_CHECKING
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -15,6 +15,7 @@ from kairos.models.blackout_day import BlackoutDay
 from kairos.models.schedule_log import ScheduleLog
 from kairos.models.task import Task, TaskStatus
 from kairos.models.user import User
+from kairos.schemas.task import RecurrenceRule
 from kairos.services.gcal_service import BusySlot, GCalService
 
 if TYPE_CHECKING:
@@ -80,10 +81,6 @@ def calculate_urgency(task: Task, now: datetime) -> float:
 
     if task.duration_mins and task.duration_mins <= 30:
         score += 5
-
-    # Recurring instances always beat normal tasks — guaranteed slot if one exists
-    if task.parent_task_id is not None:
-        score += 500
 
     return score
 
@@ -201,43 +198,59 @@ def can_schedule(task: Task, all_tasks: dict[str, Task]) -> bool:
     return True
 
 
-def _has_capacity_on_day(
-    task: Task,
-    all_free_slots: list[TimeSlot],
-    user_tz: tzinfo,
-) -> bool:
-    """Return True if any free slot on the task's deadline day fits the task's duration."""
-    if not task.deadline or not task.duration_mins:
-        return True  # can't determine — don't auto-cancel
-    target_date = _to_utc(task.deadline).astimezone(user_tz).date()
-    required = task.duration_mins + (task.buffer_mins or 0)
-    return any(
-        slot.start.astimezone(user_tz).date() == target_date and slot.duration_mins >= required
-        for slot in all_free_slots
-    )
+def _occurrence_dates(
+    rule: RecurrenceRule,
+    from_date: date,
+    until: date,
+    count_offset: int = 0,
+) -> list[date]:
+    """Return occurrence dates starting at from_date up to (not exceeding) until.
 
-
-async def cleanup_missed_occurrences(db: AsyncSession, user_id: str | None = None) -> int:
-    """Cancel pending recurring instances whose deadline has passed (they were missed).
-
-    Safe to call on every scheduler run. Returns the number of instances cancelled.
+    count_offset: number of occurrences already generated (used for end_after_count enforcement).
     """
-    now = datetime.now(timezone.utc)
-    query = select(Task).where(
-        Task.parent_task_id.is_not(None),
-        Task.status == TaskStatus.PENDING,
-        Task.deadline < now,
-    )
-    if user_id:
-        query = query.where(Task.user_id == user_id)
-    rows = await db.execute(query)
-    missed = list(rows.scalars().all())
-    for inst in missed:
-        inst.status = TaskStatus.CANCELLED
-        inst.metadata_json = {**(inst.metadata_json or {}), "cancellation_reason": "missed"}
-    if missed:
-        await db.flush()
-    return len(missed)
+    results: list[date] = []
+    current = from_date
+    count = count_offset
+
+    while current <= until:
+        if rule.end_date and current > rule.end_date:
+            break
+        if rule.end_after_count is not None and count >= rule.end_after_count:
+            break
+
+        # For weekly with days_of_week, only include matching weekdays
+        if rule.freq == "weekly" and rule.days_of_week:
+            dow_map = {"MON": 0, "TUE": 1, "WED": 2, "THU": 3, "FRI": 4, "SAT": 5, "SUN": 6}
+            if current.weekday() in {dow_map[d] for d in rule.days_of_week if d in dow_map}:
+                results.append(current)
+                count += 1
+            current += timedelta(days=1)
+            continue
+
+        results.append(current)
+        count += 1
+
+        if rule.freq == "daily":
+            current += timedelta(days=rule.interval)
+        elif rule.freq == "weekly":
+            current += timedelta(weeks=rule.interval)
+        elif rule.freq == "monthly":
+            month = current.month - 1 + rule.interval
+            year = current.year + month // 12
+            month = month % 12 + 1
+            day = min(
+                current.day,
+                [31, 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28,
+                 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1],
+            )
+            current = current.replace(year=year, month=month, day=day)
+        elif rule.freq == "yearly":
+            try:
+                current = current.replace(year=current.year + rule.interval)
+            except ValueError:
+                current = current.replace(year=current.year + rule.interval, day=28)
+
+    return results
 
 
 # ── DB helpers ─────────────────────────────────────────────────────────────────
@@ -294,40 +307,24 @@ async def run_scheduler(
     result = ScheduleResult()
     now = datetime.now(timezone.utc)
 
-    # ── 0. Clean up missed recurring instances ────────────────────────────────
-    await cleanup_missed_occurrences(db, user_id=user.id)
-
     # ── 1. Collect tasks ───────────────────────────────────────────────────────
+    # Only query template/standalone tasks (parent_task_id IS NULL).
+    # Recurring tasks are handled by scheduling one GCal event per occurrence
+    # directly on the template — no child DB rows are created.
+    horizon_days: int = user.preferences.get("scheduling_horizon_days", 14)
+    horizon_end = now + timedelta(days=horizon_days)
+
     query = select(Task).where(
         Task.user_id == user.id,
         Task.schedulable == True,  # noqa: E712
         Task.status.in_([TaskStatus.PENDING, TaskStatus.SCHEDULED]),
-        Task.parent_task_id.is_(None),  # exclude occurrence instances from direct query
+        Task.parent_task_id.is_(None),
     )
     if task_ids:
         query = query.where(Task.id.in_(task_ids))
 
     rows = await db.execute(query)
-    templates_and_standalone: list[Task] = list(rows.scalars().all())
-
-    # Also collect occurrence instances that are schedulable and pending within the horizon
-    horizon_days: int = user.preferences.get("scheduling_horizon_days", 14)
-    horizon_end = now + timedelta(days=horizon_days)
-
-    instance_query = select(Task).where(
-        Task.user_id == user.id,
-        Task.schedulable == True,  # noqa: E712
-        Task.status.in_([TaskStatus.PENDING, TaskStatus.SCHEDULED]),
-        Task.parent_task_id.is_not(None),
-        or_(Task.deadline.is_(None), Task.deadline <= horizon_end),
-    )
-    if task_ids:
-        instance_query = instance_query.where(Task.id.in_(task_ids))
-
-    instance_rows = await db.execute(instance_query)
-    instances: list[Task] = list(instance_rows.scalars().all())
-
-    tasks: list[Task] = templates_and_standalone + instances
+    tasks: list[Task] = list(rows.scalars().all())
 
     if not tasks:
         return result
@@ -400,6 +397,13 @@ async def run_scheduler(
             result.details.append({"task_id": task.id, "status": "skipped", "reason": "unmet_dependencies"})
             continue
 
+        # Recurring tasks: schedule one GCal event per occurrence, constrained to that day
+        if task.recurrence_rule:
+            await _schedule_recurring_task(
+                db, gcal, user, task, all_free_slots, user_tz, horizon_end, result
+            )
+            continue
+
         # Clear any existing GCal event(s) before rescheduling
         if task.gcal_event_id:
             old_ids = task.gcal_event_id
@@ -413,6 +417,15 @@ async def run_scheduler(
                 except Exception as exc:
                     logger.warning("Failed to delete old GCal event %s: %s", old_eid, exc)
             task.gcal_event_id = None
+
+            # Restore the freed window into all_free_slots so the task can reclaim
+            # its previous slot (or another task can). Without this, the slot stays
+            # marked busy (from the pre-deletion free/busy fetch) and the task gets
+            # pushed forward on every reschedule run.
+            if task.scheduled_at and task.scheduled_end:
+                freed_start = _to_utc(task.scheduled_at)
+                freed_end = _to_utc(task.scheduled_end) + timedelta(minutes=task.buffer_mins)
+                _restore_slot(all_free_slots, freed_start, freed_end)
 
         # Try to slot the task (with conflict retry)
         scheduled = False
@@ -428,16 +441,8 @@ async def run_scheduler(
                     break
 
             if slot is None:
-                # For recurring instances: if the target day has zero capacity, cancel the
-                # instance rather than leave it as failed — it simply can't fit that day.
-                if task.parent_task_id is not None and not _has_capacity_on_day(task, all_free_slots, user_tz):
-                    task.status = TaskStatus.CANCELLED
-                    task.metadata_json = {**(task.metadata_json or {}), "cancellation_reason": "no_slot_today"}
-                    result.skipped += 1
-                    result.details.append({"task_id": task.id, "status": "cancelled", "reason": "no_slot_today"})
-                else:
-                    result.failed += 1
-                    result.details.append({"task_id": task.id, "status": "failed", "reason": "no_slot_available"})
+                result.failed += 1
+                result.details.append({"task_id": task.id, "status": "failed", "reason": "no_slot_available"})
                 break
 
             # Write to GCal
@@ -494,6 +499,121 @@ async def run_scheduler(
 
     await db.flush()
     return result
+
+
+async def _schedule_recurring_task(
+    db: AsyncSession,
+    gcal: GCalService,
+    user: User,
+    task: Task,
+    all_free_slots: list[TimeSlot],
+    user_tz: tzinfo,
+    horizon_end: datetime,
+    result: ScheduleResult,
+) -> None:
+    """Schedule a recurring task by creating one GCal event per occurrence within the horizon.
+
+    Each occurrence is constrained to its own calendar day — no cross-day pile-up.
+    All event IDs are stored as a JSON array on the task's gcal_event_id field.
+    """
+    now = datetime.now(timezone.utc)
+    today = now.astimezone(user_tz).date()
+    horizon_date = horizon_end.astimezone(user_tz).date()
+
+    try:
+        rule = RecurrenceRule.model_validate(task.recurrence_rule)
+    except Exception as exc:
+        logger.warning("Invalid recurrence_rule on task %s: %s", task.id, exc)
+        result.skipped += 1
+        result.details.append({"task_id": task.id, "status": "skipped", "reason": "invalid_recurrence_rule"})
+        return
+
+    occ_dates = _occurrence_dates(rule, today, horizon_date)
+
+    if not occ_dates:
+        result.skipped += 1
+        result.details.append({"task_id": task.id, "status": "skipped", "reason": "no_occurrences_in_horizon"})
+        return
+
+    # Delete existing GCal events before rescheduling
+    if task.gcal_event_id:
+        try:
+            ids_to_delete = json.loads(task.gcal_event_id) if task.gcal_event_id.startswith("[") else [task.gcal_event_id]
+        except (ValueError, AttributeError):
+            ids_to_delete = [task.gcal_event_id]
+        for old_eid in ids_to_delete:
+            try:
+                await gcal.delete_event(user, old_eid)
+            except Exception as exc:
+                logger.warning("Failed to delete old GCal event %s: %s", old_eid, exc)
+        task.gcal_event_id = None
+
+        # Restore the freed window so previously occupied slots are available again.
+        # For recurring tasks we only know the first occurrence's window; restore that
+        # and let the remaining freed time surface naturally via slot merging.
+        if task.scheduled_at and task.scheduled_end:
+            freed_start = _to_utc(task.scheduled_at)
+            freed_end = _to_utc(task.scheduled_end) + timedelta(minutes=task.buffer_mins)
+            _restore_slot(all_free_slots, freed_start, freed_end)
+
+    scheduled_occurrences: list[tuple[datetime, datetime, str]] = []  # (start, end, event_id)
+
+    for occ_date in occ_dates:
+        # Restrict free slots to the occurrence's own day only
+        day_slots = [
+            s for s in all_free_slots
+            if s.start.astimezone(user_tz).date() == occ_date
+        ]
+        if not day_slots:
+            continue  # No availability on this day — skip silently
+
+        slot = find_best_slot(task, day_slots)
+        if slot is None:
+            continue  # Can't fit on this day — skip silently
+
+        try:
+            event_id = await gcal.create_event(
+                user=user,
+                summary=task.title,
+                start=slot.start,
+                end=slot.end,
+                description=f"Kairos task: {task.id}",
+                task_id=task.id,
+            )
+        except Exception as exc:
+            logger.warning("GCal create_event failed for occurrence on %s: %s", occ_date, exc)
+            continue
+
+        scheduled_occurrences.append((slot.start, slot.end, event_id))
+        _consume_slot(all_free_slots, slot, task.buffer_mins)
+
+    if not scheduled_occurrences:
+        result.failed += 1
+        result.details.append({"task_id": task.id, "status": "failed", "reason": "no_slots_for_any_occurrence"})
+        return
+
+    # next upcoming occurrence = earliest scheduled start
+    next_start, next_end, _ = min(scheduled_occurrences, key=lambda x: x[0])
+    all_event_ids = [et[2] for et in scheduled_occurrences]
+
+    task.gcal_event_id = json.dumps(all_event_ids)
+    task.scheduled_at = next_start
+    task.scheduled_end = next_end
+    task.status = TaskStatus.SCHEDULED
+
+    await _log(db, user.id, task.id, "scheduled_recurring", {
+        "event_ids": all_event_ids,
+        "occurrences_scheduled": len(all_event_ids),
+        "next_start": next_start.isoformat(),
+    })
+
+    result.scheduled += 1
+    result.details.append({
+        "task_id": task.id,
+        "status": "scheduled",
+        "occurrences_scheduled": len(all_event_ids),
+        "event_ids": all_event_ids,
+    })
 
 
 async def _schedule_split_task(
@@ -567,6 +687,30 @@ def _consume_slot(
         if used_end < slot.end:
             new_free.append(TimeSlot(start=used_end, end=slot.end))
     free_slots[:] = [s for s in new_free if s.duration_mins >= 5]
+
+
+def _restore_slot(
+    free_slots: list[TimeSlot],
+    freed_start: datetime,
+    freed_end: datetime,
+) -> None:
+    """Re-insert a freed time window back into the free slots list, merging overlaps.
+
+    Call this after deleting a task's old GCal event so that its previously occupied
+    window is available again for the current rescheduling pass.
+    freed_end should already include any buffer that was consumed.
+    """
+    if freed_start >= freed_end:
+        return
+    free_slots.append(TimeSlot(start=freed_start, end=freed_end))
+    free_slots.sort(key=lambda s: s.start)
+    merged: list[TimeSlot] = []
+    for slot in free_slots:
+        if merged and slot.start <= merged[-1].end:
+            merged[-1] = TimeSlot(start=merged[-1].start, end=max(merged[-1].end, slot.end))
+        else:
+            merged.append(TimeSlot(start=slot.start, end=slot.end))
+    free_slots[:] = [s for s in merged if s.duration_mins >= 5]
 
 
 def _recompute_free_slots(

@@ -430,14 +430,12 @@ async def extend_recurrence_horizon(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> dict:
-    """Extend occurrence instances for recurring templates up to the 90-day horizon.
+    """No-op endpoint kept for backward compatibility.
 
-    Safe to call repeatedly — only creates missing instances, never duplicates.
-    Intended for daily cron use but also callable on-demand.
+    Recurring tasks no longer spawn child DB rows, so there is no horizon to extend.
+    Each task's GCal events are created by the scheduler on each run.
     """
-    from kairos.services.task_service import extend_recurrence_horizon as _extend
-    created = await _extend(db)
-    return {"created": created}
+    return {"created": 0}
 
 
 @router.post("/recurrence/cleanup", status_code=200)
@@ -445,12 +443,10 @@ async def cleanup_missed_recurrences(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> dict:
-    """Cancel any pending recurring instances whose deadline has passed (missed occurrences).
+    """No-op endpoint kept for backward compatibility.
 
-    The scheduler calls this automatically on every run. Use this endpoint to trigger
-    a manual cleanup without running a full schedule pass.
+    Missed-occurrence cleanup is no longer needed: recurring tasks are single DB
+    rows that stay active — individual occurrence events live only in Google Calendar.
     """
-    from kairos.services.scheduler import cleanup_missed_occurrences
-    cancelled = await cleanup_missed_occurrences(db, user_id=user.id)
-    return {"cancelled": cancelled}
+    return {"cancelled": 0}
 
