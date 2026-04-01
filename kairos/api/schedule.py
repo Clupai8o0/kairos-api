@@ -424,3 +424,18 @@ async def free_slots(
 
     return slots
 
+
+@router.post("/recurrence/extend", status_code=200)
+async def extend_recurrence_horizon(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Extend occurrence instances for recurring templates up to the 90-day horizon.
+
+    Safe to call repeatedly — only creates missing instances, never duplicates.
+    Intended for daily cron use but also callable on-demand.
+    """
+    from kairos.services.task_service import extend_recurrence_horizon as _extend
+    created = await _extend(db)
+    return {"created": created}
+

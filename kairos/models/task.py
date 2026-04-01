@@ -48,6 +48,13 @@ class Task(Base):
     # Dependencies
     depends_on: Mapped[list] = mapped_column(ARRAY(String), default=list)
 
+    # Recurrence
+    recurrence_rule: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    parent_task_id: Mapped[str | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=True
+    )
+    recurrence_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # Metadata
     metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
 
@@ -65,4 +72,18 @@ class Task(Base):
     project: Mapped["Project"] = relationship(back_populates="tasks")  # noqa: F821
     tags: Mapped[list["Tag"]] = relationship(  # noqa: F821
         secondary="task_tags", back_populates="tasks"
+    )
+    # Self-referential: occurrence instances back to their template
+    recurrence_instances: Mapped[list["Task"]] = relationship(
+        "Task",
+        foreign_keys="Task.parent_task_id",
+        back_populates="parent_task",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    parent_task: Mapped["Task | None"] = relationship(
+        "Task",
+        foreign_keys="Task.parent_task_id",
+        back_populates="recurrence_instances",
+        remote_side="Task.id",
     )

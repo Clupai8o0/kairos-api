@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -256,12 +256,32 @@ async def run_scheduler(
         Task.user_id == user.id,
         Task.schedulable == True,  # noqa: E712
         Task.status.in_([TaskStatus.PENDING, TaskStatus.SCHEDULED]),
+        Task.parent_task_id.is_(None),  # exclude occurrence instances from direct query
     )
     if task_ids:
         query = query.where(Task.id.in_(task_ids))
 
     rows = await db.execute(query)
-    tasks: list[Task] = list(rows.scalars().all())
+    templates_and_standalone: list[Task] = list(rows.scalars().all())
+
+    # Also collect occurrence instances that are schedulable and pending within the horizon
+    horizon_days: int = user.preferences.get("scheduling_horizon_days", 14)
+    horizon_end = now + timedelta(days=horizon_days)
+
+    instance_query = select(Task).where(
+        Task.user_id == user.id,
+        Task.schedulable == True,  # noqa: E712
+        Task.status.in_([TaskStatus.PENDING, TaskStatus.SCHEDULED]),
+        Task.parent_task_id.is_not(None),
+        or_(Task.deadline.is_(None), Task.deadline <= horizon_end),
+    )
+    if task_ids:
+        instance_query = instance_query.where(Task.id.in_(task_ids))
+
+    instance_rows = await db.execute(instance_query)
+    instances: list[Task] = list(instance_rows.scalars().all())
+
+    tasks: list[Task] = templates_and_standalone + instances
 
     if not tasks:
         return result
@@ -272,9 +292,7 @@ async def run_scheduler(
     # ── 2. Sort by urgency ─────────────────────────────────────────────────────
     tasks.sort(key=lambda t: _sort_key(t, now))
 
-    # ── 3. Determine scheduling horizon ───────────────────────────────────────
-    horizon_days: int = user.preferences.get("scheduling_horizon_days", 14)
-    horizon_end = now + timedelta(days=horizon_days)
+    # ── 3. Scheduling horizon already computed above ───────────────────────────
 
     # ── 4. Fetch free/busy from GCal ──────────────────────────────────────────
     try:

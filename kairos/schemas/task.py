@@ -1,4 +1,5 @@
-from datetime import datetime
+from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -6,6 +7,27 @@ from kairos.schemas.tag import TagResponse
 
 _DEFAULT_MIN_CHUNK_MINS = 30
 _MINIMUM_CHUNK_MINS = 5
+
+
+class RecurrenceRule(BaseModel):
+    freq: Literal["daily", "weekly", "monthly", "yearly"]
+    interval: int = 1
+    days_of_week: list[str] | None = None  # e.g. ["MON", "WED"] — weekly only
+    end_date: date | None = None
+    end_after_count: int | None = None
+
+    @field_validator("interval")
+    @classmethod
+    def validate_interval(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("interval must be >= 1")
+        return v
+
+    @model_validator(mode="after")
+    def validate_end_condition(self) -> "RecurrenceRule":
+        if self.end_date is not None and self.end_after_count is not None:
+            raise ValueError("end_date and end_after_count are mutually exclusive")
+        return self
 
 
 class TaskCreate(BaseModel):
@@ -22,6 +44,7 @@ class TaskCreate(BaseModel):
     depends_on: list[str] = []
     buffer_mins: int = 15
     metadata: dict = {}
+    recurrence_rule: RecurrenceRule | None = None
 
     @field_validator("priority")
     @classmethod
@@ -66,6 +89,7 @@ class TaskUpdate(BaseModel):
     depends_on: list[str] | None = None
     buffer_mins: int | None = None
     metadata: dict | None = None
+    recurrence_rule: RecurrenceRule | None = None
 
     @field_validator("priority")
     @classmethod
@@ -113,6 +137,9 @@ class TaskResponse(BaseModel):
     # reserved Base.metadata name). We map it back to "metadata" in the API response.
     metadata: dict = Field(validation_alias="metadata_json", default={})
     tags: list[TagResponse] = []
+    recurrence_rule: dict | None = None
+    parent_task_id: str | None = None
+    recurrence_index: int | None = None
     completed_at: datetime | None
     created_at: datetime
     updated_at: datetime

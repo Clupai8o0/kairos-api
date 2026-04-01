@@ -28,6 +28,9 @@ async def create_task(
     `scheduled_at`, `scheduled_end`, and `gcal_event_id` populated.
     If GCal is unavailable, the task is saved with `scheduled_at=null` and can be
     retried via `POST /schedule/run`.
+
+    If `recurrence_rule` is provided, the task becomes a recurring template and
+    occurrence instances are pre-generated up to a 90-day horizon.
     """
     task = await task_service.create_task(db, current_user, data, gcal=gcal)
     return task  # type: ignore[return-value]
@@ -49,6 +52,8 @@ async def list_tasks(
     order: Literal["asc", "desc"] = Query(default="desc"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    include_instances: bool = Query(default=True, description="Include recurrence occurrence instances. Set to false to see only templates + standalone tasks."),
+    parent_task_id: str | None = Query(default=None, description="Filter to occurrences of a specific recurring template."),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> TaskListResponse:
@@ -56,6 +61,8 @@ async def list_tasks(
 
     `tag_ids` uses AND logic — only tasks that have **all** specified tags are returned.
     `search` does a case-insensitive keyword match on title and description.
+    `include_instances=false` hides occurrence instances; only templates and standalone tasks are returned.
+    `parent_task_id` returns all occurrence instances for a specific recurring template.
     """
     tasks, total = await task_service.list_tasks(
         db,
@@ -72,6 +79,8 @@ async def list_tasks(
         order=order,
         limit=limit,
         offset=offset,
+        include_instances=include_instances,
+        parent_task_id=parent_task_id,
     )
     return TaskListResponse(tasks=tasks, total=total, limit=limit, offset=offset)  # type: ignore[arg-type]
 
@@ -93,6 +102,10 @@ async def get_task(
 async def update_task(
     task_id: str,
     data: TaskUpdate,
+    update_scope: Literal["this", "this_and_future", "all"] = Query(
+        default="this",
+        description="For recurring tasks: 'this' updates only this task, 'this_and_future' propagates to future instances, 'all' regenerates all instances.",
+    ),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
     gcal: GCalService = Depends(get_gcal_service),
@@ -101,8 +114,13 @@ async def update_task(
 
     Changing `duration_mins`, `deadline`, or `priority` triggers re-scheduling.
     The GCal event is updated or removed according to the new values.
+
+    For recurring tasks, use `update_scope` to control propagation:
+    - `this` (default) — update only this task; detaches occurrence instances to standalone
+    - `this_and_future` — update this + all future pending instances
+    - `all` — update template, delete and regenerate all future instances
     """
-    task = await task_service.update_task(db, current_user, task_id, data, gcal=gcal)
+    task = await task_service.update_task(db, current_user, task_id, data, gcal=gcal, update_scope=update_scope)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return task  # type: ignore[return-value]

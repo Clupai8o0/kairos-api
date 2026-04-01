@@ -34,7 +34,9 @@
 - [x] Task splitting with 30-min default chunk size (schema validation + scheduler)
 - [x] Chat session persistence (`POST/GET/PUT/DELETE /chat/sessions` — 18 tests)
 - [x] Calendar `is_free` change triggers immediate reschedule (bug fix)
-- [x] Tests passing (234 tests)
+- [x] Timezone bug fix: work hours now respected in user's local timezone (not UTC)
+- [x] Recurring tasks (recurrence_rule, parent_task_id, recurrence_index — 90-day horizon, update_scope param, horizon extension endpoint)
+- [x] Tests passing (249 tests)
 
 **Known issues:**
 - `uv` not installed on this machine — used `python3.12 -m venv` + `pip` instead. README documents `uv` as the recommended approach.
