@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 # ── Data structures ────────────────────────────────────────────────────────────
 
+
 @dataclass
 class TimeSlot:
     start: datetime
@@ -46,6 +47,7 @@ class ScheduleResult:
 
 # ── Timezone helpers ──────────────────────────────────────────────────────────
 
+
 def _to_utc(dt: datetime) -> datetime:
     """Ensure a datetime is UTC-aware. TZ-naive datetimes are assumed to be UTC.
 
@@ -58,6 +60,7 @@ def _to_utc(dt: datetime) -> datetime:
 
 
 # ── Urgency scoring ────────────────────────────────────────────────────────────
+
 
 def calculate_urgency(task: Task, now: datetime) -> float:
     """Higher score → scheduled first → gets the best time slots."""
@@ -86,7 +89,9 @@ def calculate_urgency(task: Task, now: datetime) -> float:
 
 
 def _sort_key(task: Task, now: datetime):
-    deadline = _to_utc(task.deadline) if task.deadline else datetime.max.replace(tzinfo=timezone.utc)
+    deadline = (
+        _to_utc(task.deadline) if task.deadline else datetime.max.replace(tzinfo=timezone.utc)
+    )
     return (
         -calculate_urgency(task, now),
         deadline,
@@ -96,6 +101,7 @@ def _sort_key(task: Task, now: datetime):
 
 
 # ── Free-slot computation ──────────────────────────────────────────────────────
+
 
 def get_free_slots(
     busy_slots: list[BusySlot],
@@ -189,9 +195,10 @@ def split_task(
 
 # ── Dependency check ───────────────────────────────────────────────────────────
 
+
 def can_schedule(task: Task, all_tasks: dict[str, Task]) -> bool:
     """Return False if any dependency is unfinished."""
-    for dep_id in (task.depends_on or []):
+    for dep_id in task.depends_on or []:
         dep = all_tasks.get(dep_id)
         if not dep or dep.status != TaskStatus.DONE:
             return False
@@ -240,8 +247,20 @@ def _occurrence_dates(
             month = month % 12 + 1
             day = min(
                 current.day,
-                [31, 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28,
-                 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1],
+                [
+                    31,
+                    29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28,
+                    31,
+                    30,
+                    31,
+                    30,
+                    31,
+                    31,
+                    30,
+                    31,
+                    30,
+                    31,
+                ][month - 1],
             )
             current = current.replace(year=year, month=month, day=day)
         elif rule.freq == "yearly":
@@ -254,6 +273,7 @@ def _occurrence_dates(
 
 
 # ── DB helpers ─────────────────────────────────────────────────────────────────
+
 
 async def _get_blackout_dates(
     db: AsyncSession,
@@ -289,6 +309,7 @@ async def _log(
 
 
 # ── Main scheduler ─────────────────────────────────────────────────────────────
+
 
 async def run_scheduler(
     db: AsyncSession,
@@ -351,7 +372,9 @@ async def run_scheduler(
         # Fail open — mark all as skipped rather than crashing
         for task in tasks:
             result.skipped += 1
-            result.details.append({"task_id": task.id, "status": "skipped", "reason": "gcal_unavailable"})
+            result.details.append(
+                {"task_id": task.id, "status": "skipped", "reason": "gcal_unavailable"}
+            )
         return result
 
     # ── 5. Fetch blackout days ─────────────────────────────────────────────────
@@ -362,7 +385,9 @@ async def run_scheduler(
         user_tz = timezone.utc
     now_local = now.astimezone(user_tz)
     horizon_end_local = horizon_end.astimezone(user_tz)
-    blackout_dates = await _get_blackout_dates(db, user.id, now_local.date(), horizon_end_local.date())
+    blackout_dates = await _get_blackout_dates(
+        db, user.id, now_local.date(), horizon_end_local.date()
+    )
 
     # ── 6. Parse work hours ────────────────────────────────────────────────────
     wh = user.preferences.get("work_hours", {"start": "09:00", "end": "17:00"})
@@ -378,9 +403,7 @@ async def run_scheduler(
             day_slots = get_free_slots(busy_slots, current, work_start, work_end, user_tz)
             # Clip to future (don't schedule in the past within today)
             clipped = [
-                TimeSlot(start=max(s.start, now), end=s.end)
-                for s in day_slots
-                if s.end > now
+                TimeSlot(start=max(s.start, now), end=s.end) for s in day_slots if s.end > now
             ]
             all_free_slots.extend(s for s in clipped if s.duration_mins >= 5)
         current += timedelta(days=1)
@@ -389,12 +412,16 @@ async def run_scheduler(
     for task in tasks:
         if not task.duration_mins:
             result.skipped += 1
-            result.details.append({"task_id": task.id, "status": "skipped", "reason": "no_duration"})
+            result.details.append(
+                {"task_id": task.id, "status": "skipped", "reason": "no_duration"}
+            )
             continue
 
         if not can_schedule(task, all_tasks_map):
             result.skipped += 1
-            result.details.append({"task_id": task.id, "status": "skipped", "reason": "unmet_dependencies"})
+            result.details.append(
+                {"task_id": task.id, "status": "skipped", "reason": "unmet_dependencies"}
+            )
             continue
 
         # Recurring tasks: schedule one GCal event per occurrence, constrained to that day
@@ -442,7 +469,9 @@ async def run_scheduler(
 
             if slot is None:
                 result.failed += 1
-                result.details.append({"task_id": task.id, "status": "failed", "reason": "no_slot_available"})
+                result.details.append(
+                    {"task_id": task.id, "status": "failed", "reason": "no_slot_available"}
+                )
                 break
 
             # Write to GCal
@@ -468,7 +497,13 @@ async def run_scheduler(
                             free_calendar_ids=free_calendar_ids,
                         )
                         all_free_slots = _recompute_free_slots(
-                            busy_slots, now, horizon_end, blackout_dates, work_start, work_end, user_tz
+                            busy_slots,
+                            now,
+                            horizon_end,
+                            blackout_dates,
+                            work_start,
+                            work_end,
+                            user_tz,
                         )
                     except Exception:
                         pass
@@ -483,11 +518,17 @@ async def run_scheduler(
             task.scheduled_end = slot.end
             task.status = TaskStatus.SCHEDULED
 
-            await _log(db, user.id, task.id, "scheduled", {
-                "event_id": event_id,
-                "start": slot.start.isoformat(),
-                "end": slot.end.isoformat(),
-            })
+            await _log(
+                db,
+                user.id,
+                task.id,
+                "scheduled",
+                {
+                    "event_id": event_id,
+                    "start": slot.start.isoformat(),
+                    "end": slot.end.isoformat(),
+                },
+            )
 
             # Consume the used slot from free slots
             _consume_slot(all_free_slots, slot, task.buffer_mins)
@@ -525,20 +566,28 @@ async def _schedule_recurring_task(
     except Exception as exc:
         logger.warning("Invalid recurrence_rule on task %s: %s", task.id, exc)
         result.skipped += 1
-        result.details.append({"task_id": task.id, "status": "skipped", "reason": "invalid_recurrence_rule"})
+        result.details.append(
+            {"task_id": task.id, "status": "skipped", "reason": "invalid_recurrence_rule"}
+        )
         return
 
     occ_dates = _occurrence_dates(rule, today, horizon_date)
 
     if not occ_dates:
         result.skipped += 1
-        result.details.append({"task_id": task.id, "status": "skipped", "reason": "no_occurrences_in_horizon"})
+        result.details.append(
+            {"task_id": task.id, "status": "skipped", "reason": "no_occurrences_in_horizon"}
+        )
         return
 
     # Delete existing GCal events before rescheduling
     if task.gcal_event_id:
         try:
-            ids_to_delete = json.loads(task.gcal_event_id) if task.gcal_event_id.startswith("[") else [task.gcal_event_id]
+            ids_to_delete = (
+                json.loads(task.gcal_event_id)
+                if task.gcal_event_id.startswith("[")
+                else [task.gcal_event_id]
+            )
         except (ValueError, AttributeError):
             ids_to_delete = [task.gcal_event_id]
         for old_eid in ids_to_delete:
@@ -560,10 +609,7 @@ async def _schedule_recurring_task(
 
     for occ_date in occ_dates:
         # Restrict free slots to the occurrence's own day only
-        day_slots = [
-            s for s in all_free_slots
-            if s.start.astimezone(user_tz).date() == occ_date
-        ]
+        day_slots = [s for s in all_free_slots if s.start.astimezone(user_tz).date() == occ_date]
         if not day_slots:
             continue  # No availability on this day — skip silently
 
@@ -589,7 +635,9 @@ async def _schedule_recurring_task(
 
     if not scheduled_occurrences:
         result.failed += 1
-        result.details.append({"task_id": task.id, "status": "failed", "reason": "no_slots_for_any_occurrence"})
+        result.details.append(
+            {"task_id": task.id, "status": "failed", "reason": "no_slots_for_any_occurrence"}
+        )
         return
 
     # next upcoming occurrence = earliest scheduled start
@@ -601,19 +649,27 @@ async def _schedule_recurring_task(
     task.scheduled_end = next_end
     task.status = TaskStatus.SCHEDULED
 
-    await _log(db, user.id, task.id, "scheduled_recurring", {
-        "event_ids": all_event_ids,
-        "occurrences_scheduled": len(all_event_ids),
-        "next_start": next_start.isoformat(),
-    })
+    await _log(
+        db,
+        user.id,
+        task.id,
+        "scheduled_recurring",
+        {
+            "event_ids": all_event_ids,
+            "occurrences_scheduled": len(all_event_ids),
+            "next_start": next_start.isoformat(),
+        },
+    )
 
     result.scheduled += 1
-    result.details.append({
-        "task_id": task.id,
-        "status": "scheduled",
-        "occurrences_scheduled": len(all_event_ids),
-        "event_ids": all_event_ids,
-    })
+    result.details.append(
+        {
+            "task_id": task.id,
+            "status": "scheduled",
+            "occurrences_scheduled": len(all_event_ids),
+            "event_ids": all_event_ids,
+        }
+    )
 
 
 async def _schedule_split_task(
@@ -659,10 +715,16 @@ async def _schedule_split_task(
     task.scheduled_end = chunks[-1].end
     task.status = TaskStatus.SCHEDULED
 
-    await _log(db, user.id, task.id, "scheduled_split", {
-        "event_ids": event_ids,
-        "chunks": [{"start": c.start.isoformat(), "end": c.end.isoformat()} for c in chunks],
-    })
+    await _log(
+        db,
+        user.id,
+        task.id,
+        "scheduled_split",
+        {
+            "event_ids": event_ids,
+            "chunks": [{"start": c.start.isoformat(), "end": c.end.isoformat()} for c in chunks],
+        },
+    )
 
     result.scheduled += 1
     result.details.append({"task_id": task.id, "status": "scheduled", "event_ids": event_ids})
@@ -702,6 +764,13 @@ def _restore_slot(
     """
     if freed_start >= freed_end:
         return
+
+    now = datetime.now(timezone.utc)
+    if freed_end <= now:
+        return
+    if freed_start < now:
+        freed_start = now
+
     free_slots.append(TimeSlot(start=freed_start, end=freed_end))
     free_slots.sort(key=lambda s: s.start)
     merged: list[TimeSlot] = []
@@ -709,7 +778,7 @@ def _restore_slot(
         if merged and slot.start <= merged[-1].end:
             merged[-1] = TimeSlot(start=merged[-1].start, end=max(merged[-1].end, slot.end))
         else:
-            merged.append(TimeSlot(start=slot.start, end=slot.end))
+            merged.append(slot)
     free_slots[:] = [s for s in merged if s.duration_mins >= 5]
 
 
@@ -729,9 +798,7 @@ def _recompute_free_slots(
         if current not in blackout_dates:
             day_slots = get_free_slots(busy, current, work_start, work_end, tz)
             clipped = [
-                TimeSlot(start=max(s.start, now), end=s.end)
-                for s in day_slots
-                if s.end > now
+                TimeSlot(start=max(s.start, now), end=s.end) for s in day_slots if s.end > now
             ]
             all_free.extend(s for s in clipped if s.duration_mins >= 5)
         current += timedelta(days=1)
@@ -739,6 +806,7 @@ def _recompute_free_slots(
 
 
 # ── Schedule-on-write helper ───────────────────────────────────────────────────
+
 
 async def schedule_single_task(
     db: AsyncSession,
